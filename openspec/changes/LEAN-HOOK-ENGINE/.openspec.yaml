@@ -1,0 +1,5 @@
+schema: feature-rapid
+feature-id: LEAN-HOOK-ENGINE
+linear-ticket: none
+worktree: ~/code/lean-hook-engine
+branch: main
