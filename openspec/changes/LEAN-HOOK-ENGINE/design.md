@@ -207,7 +207,7 @@ The build script writes a JSON file. For each valid rule, it generates the appro
 ```json
 {
   "type": "command",
-  "command": "HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/fail-wrapper.sh closed bash /Users/spidey/.claude/hooks/process-kill-guard.sh",
+  "command": "HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/fail-wrapper.sh closed bash ~/.claude/hooks/process-kill-guard.sh",
   "timeout": 10
 }
 ```
