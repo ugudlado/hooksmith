@@ -1,0 +1,21 @@
+#!/bin/bash
+# hooksmith — CLI dispatcher for hooksmith plugin.
+# Usage: hooksmith <command> [args...]
+#   hooksmith run <id>          — Execute hook by id
+#   hooksmith list [opts]       — List registered hooks
+#   hooksmith convert [opts]    — Convert settings.json hooks to YAML rules
+#   hooksmith build             — Rebuild hooks.json from YAML rules
+#   hooksmith start             — SessionStart: rebuild hooks.json if rules changed
+
+PLUGIN_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+case "${1:-}" in
+  list)    shift; exec bash "${PLUGIN_ROOT}/lib/list.sh" "$@" ;;
+  run)     shift; exec bash "${PLUGIN_ROOT}/lib/run.sh" "$@" ;;
+  convert) shift; exec bash "${PLUGIN_ROOT}/lib/convert.sh" "$@" ;;
+  build)   shift; exec bash "${PLUGIN_ROOT}/build.sh" "$@" ;;
+  start)   shift; exec bash "${PLUGIN_ROOT}/lib/auto-build.sh" "$@" ;;
+  *)       echo "hooksmith: unknown command '${1:-}'" >&2
+           echo "Commands: run, list, convert, build, start" >&2
+           exit 1 ;;
+esac
