@@ -311,13 +311,6 @@ main() {
       '.hooks[$e] = (.hooks[$e] // []) + [$g]')
   done
 
-  # Inject static SessionStart auto-build hook (always present)
-  local auto_build_entry
-  auto_build_entry=$(jq -n --arg cmd "bash \${CLAUDE_PLUGIN_ROOT}/lib/auto-build.sh" \
-    '{hooks:[{type:"command",command:$cmd,timeout:30}]}')
-  hooks_json=$(echo "$hooks_json" | jq --argjson g "$auto_build_entry" \
-    '.hooks.SessionStart = (.hooks.SessionStart // []) + [$g]')
-
   # Write output
   mkdir -p "$(dirname "$OUTPUT")"
   echo "$hooks_json" | jq '.' > "$OUTPUT"
