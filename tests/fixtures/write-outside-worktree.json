@@ -1,0 +1,8 @@
+{
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "/tmp/outside.ts",
+    "content": "test"
+  },
+  "cwd": "/home/user/code/feature_worktrees/MY-FEAT/src"
+}
