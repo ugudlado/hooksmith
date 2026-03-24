@@ -103,20 +103,16 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith start",
-            "timeout": 30
-          }
-        ]
       }
     ],
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Review your last response. Did you ask the user any questions, request decisions,\nor present choices that require their input — WITHOUT using the AskUserQuestion tool?\nExempt: rhetorical questions, \"let me know if you need anything\", and confirming\ncompletion of work. Only flag genuine decision/input requests.\nIf you asked questions without AskUserQuestion, respond with:\n{\"decision\": \"block\", \"reason\": \"Rewrite your questions using the AskUserQuestion tool — it provides structured options and better UX.\"}\nOtherwise respond with: {}",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run loop-detector",
@@ -163,6 +159,11 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run task-gate",
+            "timeout": 10
+          },
+          {
+            "type": "prompt",
+            "prompt": "You are operating under a spec-first development workflow. On every response, you MUST:\n1. FOLLOW ALL PHASES: Never skip steps in /specify, /implement, or /complete-feature.\n   Each command has a defined sequence — execute every step, not just the ones that seem important.\n2. REVIEW GATES: Phase reviews (score >= 9/10) are mandatory. Do not skip them.\n3. EVIDENCE-BASED: Verify before claiming. Run tests, read files, check output.\n4. TASK TRACKING: Mark tasks in_progress before starting, completed when done.\nRespond with: {\"hookSpecificOutput\": {\"additionalContext\": \"WORKFLOW: spec-first active. Follow all phases. No shortcuts.\"}}",
             "timeout": 10
           }
         ]
