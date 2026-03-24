@@ -76,8 +76,6 @@ Once the user approves:
 
 4. **Tell the user**: *"Done. The `<id>` hook is registered and will be active from the next session."*
 
-> The build step is required. Auto-build only runs at session start — always build immediately after writing a rule.
-
 ## CLI Commands
 
 ```bash
@@ -131,13 +129,13 @@ Rebuild `hooks.json` from all YAML rules:
 bash ${CLAUDE_PLUGIN_ROOT}/hooksmith build
 ```
 
-Build validates every rule (required fields, event names, mechanism constraints, id format, id-filename match, uniqueness) and errors clearly on violations. Auto-build also runs at session start when rules have changed.
+Build validates every rule (required fields, event names, mechanism constraints, id format, id-filename match, uniqueness) and errors clearly on violations.
 
 ## Overview
 
 Rules live in `~/.config/hooksmith/rules/` (user-level) or `.hooksmith/rules/` (project-level). Each rule is one YAML file. Project rules override user rules with the same filename.
 
-**Auto-build**: `hooks.json` is rebuilt automatically at session start when rule files change. Changes take effect on the **next** session after the rebuild.
+Run `hooksmith build` after adding, removing, or restructuring rules. The build updates `hooks.json` — changes take effect on the **next** session.
 
 ## Rule Format
 
