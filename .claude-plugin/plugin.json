@@ -1,7 +1,15 @@
 {
-  "name": "lean-hook-engine",
+  "name": "hooksmith",
+  "version": "1.0.0",
   "description": "Declarative hook rules compiled to native Claude Code hooks. Define rules as YAML, build to hooks.json. Supports regex, script, and prompt mechanisms.",
   "author": {
-    "name": "spidey"
-  }
+    "name": "Mahesh"
+  },
+  "keywords": [
+    "hooks",
+    "automation",
+    "safety",
+    "rules",
+    "yaml"
+  ]
 }

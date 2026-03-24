@@ -1,3 +1,5 @@
-# Generated file — rebuilt by `lean-hooks build`
-# Uncomment if you want to track the generated output:
-# !hooks/hooks.json
+# Build artifacts
+hooks/.rules-checksum
+
+# Local settings (personal permissions, not shared)
+.claude/settings.local.json
