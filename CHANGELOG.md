@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 — 2026-03-24
+
++ Add Stop event hooks for workflow enforcement (AskUserQuestion gate, spec-first reinforcement)
+* Remove auto-build mechanism from SessionStart — hook rebuilds now require explicit 'hooksmith build' command
+- Remove auto-build.sh dead code from lib directory
+
 ## 1.0.0 — 2026-03-24
 
 + Added lean-hook-engine plugin with comprehensive hook system
