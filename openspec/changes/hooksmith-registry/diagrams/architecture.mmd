@@ -1,0 +1,37 @@
+flowchart TB
+    subgraph Sources["YAML Rule Sources"]
+        UR["~/.config/hooksmith/rules/*.yaml<br/>(user scope)"]
+        PR[".hooksmith/rules/*.yaml<br/>(project scope)"]
+    end
+
+    subgraph BuildTime["Build Time"]
+        BS["build.sh"]
+        PS1["lib/parse.sh"]
+        BS -->|sources| PS1
+        BS -->|validates id, format, uniqueness| VR["Validated Rules"]
+        VR -->|generates| HJ["hooks/hooks.json"]
+    end
+
+    subgraph Runtime["Runtime (Hook Execution)"]
+        CC["Claude Code"] -->|invokes| HS["./hooksmith run &lt;id&gt;"]
+        HS -->|delegates| RS["lib/run.sh"]
+        RS -->|sources| PS2["lib/parse.sh"]
+        RS -->|looks up id| YAML["YAML Rule File"]
+        RS -->|dispatches| D{mechanism?}
+        D -->|regex| RM["lib/regex-match.sh"]
+        D -->|script| US["User Script"]
+        D -->|prompt| NA["N/A<br/>(in hooks.json directly)"]
+    end
+
+    subgraph Listing["Registry Listing"]
+        LS["lib/list.sh"] -->|sources| PS3["lib/parse.sh"]
+        LS -->|reads| Sources
+        LS -->|outputs| TBL["Table / JSON"]
+    end
+
+    UR --> BS
+    PR --> BS
+    YAML -.->|resolves to| UR
+    YAML -.->|resolves to| PR
+
+    HJ -->|"bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run &lt;id&gt;"| CC

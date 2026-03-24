@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant CC as Claude Code
+    participant HS as ./hooksmith
+    participant RS as lib/run.sh
+    participant PS as lib/parse.sh
+    participant RM as lib/regex-match.sh
+    participant US as User Script
+
+    CC->>HS: bash hooksmith run smart-notify<br/>(stdin: hook JSON)
+    HS->>RS: exec bash lib/run.sh "smart-notify"
+    RS->>PS: source parse.sh
+    RS->>RS: Find rule:<br/>1. .hooksmith/rules/smart-notify.yaml<br/>2. ~/.config/hooksmith/rules/smart-notify.yaml
+    RS->>PS: parse_yaml(rule_file)
+    PS-->>RS: mechanism=script, script=~/.claude/hooks/smart-notify.sh,<br/>fail_mode=open
+
+    alt mechanism = script
+        RS->>US: HOOKLIB=... bash script_path<br/>(stdin piped through)
+        US-->>RS: JSON output (warn/deny/context)
+    else mechanism = regex
+        RS->>RM: bash regex-match.sh field pattern msg result<br/>(stdin piped through)
+        RM-->>RS: JSON output
+    end
+
+    alt success
+        RS-->>CC: pass output through
+    else failure + fail_mode=open
+        RS-->>CC: exit 0 (allow)
+    else failure + fail_mode=closed
+        RS-->>CC: deny JSON + exit 0
+    end
