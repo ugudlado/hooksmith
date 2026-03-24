@@ -1,0 +1,9 @@
+# Deny writes to sensitive file types
+id: protected-files
+event: PreToolUse
+matcher: Write|Edit
+mechanism: regex
+field: file_path
+pattern: '\.(env|ssh|pem)$'
+result: deny
+message: "Protected file: cannot write to .env, .ssh, or .pem files."
