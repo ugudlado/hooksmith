@@ -1,27 +1,59 @@
 #!/bin/bash
-# eval.sh — Live rule evaluator. Reads hooksmith.yaml, matches rules, returns decision.
-# No build step needed. Called directly from hooks.json.
+# eval.sh — Live rule evaluator. Reads rules from YAML files, matches, returns decision.
+# No build step. Called directly from hooks.json.
 #
 # Usage: eval.sh
 #   Reads hook context JSON on stdin (from Claude Code).
-#   Reads rules from hooksmith.yaml files (project then user scope).
+#   Scans rule files from project and user scope.
 #   Evaluates matching rules and outputs decision JSON.
+#
+# Rule file locations (all scanned, project scope first):
+#   .hooksmith/hooksmith.yaml                — project single-file rules
+#   .hooksmith/rules/*.yaml                  — project rule folder
+#   .hooksmith/rules/<subfolder>/*.yaml      — project grouped rules
+#   ~/.config/hooksmith/hooksmith.yaml       — user single-file rules
+#   ~/.config/hooksmith/rules/*.yaml         — user rule folder
+#   ~/.config/hooksmith/rules/<subfolder>/*.yaml — user grouped rules
+#
+# Example folder structure:
+#   .hooksmith/
+#     hooksmith.yaml           — quick rules
+#     rules/
+#       security/
+#         block-rm.yaml
+#         sudo-guard.yaml
+#       formatting/
+#         lint-on-save.yaml
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "${SCRIPT_DIR}/../core/config.sh"
-source "${SCRIPT_DIR}/../core/hooklib.sh"
+source "${SCRIPT_DIR}/core/config.sh"
+source "${SCRIPT_DIR}/core/hooklib.sh"
 
-PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-# ── Rule file locations ──
+# ── Collect all rule files (project scope first, then user scope) ──
 
 _rule_files() {
-  # Project scope first (higher priority), then user scope
-  local files=()
-  [[ -f ".hooksmith/hooksmith.yaml" ]] && files+=(".hooksmith/hooksmith.yaml")
-  [[ -f "$HOME/.config/hooksmith/hooksmith.yaml" ]] && files+=("$HOME/.config/hooksmith/hooksmith.yaml")
-  printf '%s\n' "${files[@]}"
+  local dirs=(
+    ".hooksmith"
+    "$HOME/.config/hooksmith"
+  )
+  for dir in "${dirs[@]}"; do
+    # Single-file rules
+    [[ -f "$dir/hooksmith.yaml" ]] && echo "$dir/hooksmith.yaml"
+    # Rule folder (flat)
+    if [[ -d "$dir/rules" ]]; then
+      for f in "$dir/rules"/*.yaml; do
+        [[ -f "$f" ]] && echo "$f"
+      done
+      # Subfolders (one level deep for grouping)
+      for sub in "$dir/rules"/*/; do
+        [[ -d "$sub" ]] || continue
+        for f in "$sub"*.yaml; do
+          [[ -f "$f" ]] && echo "$f"
+        done
+      done
+    fi
+  done
 }
 
 # ── Extract event + tool from stdin JSON ──
@@ -57,13 +89,9 @@ _rule_matches() {
 
 _eval_rule() {
   local rule="$1" input="$2"
-  local name match_field run_field prompt_field action
-
-  name=$(echo "$rule" | jq -r '.name // "unnamed"')
 
   # Detect action
-  action=""
-  local message=""
+  local action="" message=""
   for a in deny ask context; do
     local val
     val=$(echo "$rule" | jq -r "if has(\"$a\") then .$a | tostring else empty end")
@@ -74,16 +102,18 @@ _eval_rule() {
   [[ -z "$action" ]] && return 0
 
   # Detect mechanism
+  local match_field run_field
   match_field=$(echo "$rule" | jq -r '.match // empty')
   run_field=$(echo "$rule" | jq -r '.run // empty')
-  prompt_field=$(echo "$rule" | jq -r '.prompt // empty')
+
+  local name
+  name=$(echo "$rule" | jq -r '.name // "unnamed"')
 
   if [[ -n "$match_field" ]]; then
     _eval_match "$name" "$match_field" "$message" "$action" "$input"
   elif [[ -n "$run_field" ]]; then
     _eval_run "$name" "$run_field" "$action" "$input"
   fi
-  # prompt rules can't be evaluated at runtime (they need type:prompt in hooks.json)
 }
 
 # ── Evaluate a match (regex) rule ──
@@ -91,7 +121,6 @@ _eval_rule() {
 _eval_match() {
   local name="$1" match_field="$2" message="$3" action="$4" input="$5"
 
-  # Parse "field =~ pattern"
   if [[ ! "$match_field" =~ ^([a-z_]+)[[:space:]]*=~[[:space:]]*(.+)$ ]]; then
     debug "eval [$name]: invalid match syntax: $match_field"
     return 0
@@ -100,7 +129,6 @@ _eval_match() {
   local pattern="${BASH_REMATCH[2]}"
   pattern=$(echo "$pattern" | sed "s/^[\"']//; s/[\"']$//")
 
-  # Extract field value
   local value
   value=$(echo "$input" | jq -r --arg f "$field" '.tool_input[$f] // .[$f] // empty')
 
@@ -108,7 +136,7 @@ _eval_match() {
   if [[ "$value" =~ $re ]]; then
     debug "eval [$name]: matched '$field' =~ '$pattern'"
     _emit_decision "$action" "$message"
-    return 1  # signal: decision made
+    return 1
   fi
   return 0
 }
@@ -127,14 +155,13 @@ _eval_run() {
     script_content="$run_field"
   fi
 
-  # Execute with INPUT set
   local reason
-  INPUT="$input" reason=$(eval "$script_content" 2>/dev/null) || true
+  HOOKLIB="${SCRIPT_DIR}/core/hooklib.sh" INPUT="$input" reason=$(eval "$script_content" 2>/dev/null) || true
 
   if [[ -n "$reason" ]]; then
     debug "eval [$name]: script returned reason: $reason"
     _emit_decision "$action" "$reason"
-    return 1  # signal: decision made
+    return 1
   fi
   return 0
 }
@@ -156,7 +183,6 @@ _emit_decision() {
 # ── Main ──
 
 main() {
-  # Read stdin
   local input
   input=$(cat)
 
@@ -167,9 +193,9 @@ main() {
     exit 0
   fi
 
-  # Find and evaluate matching rules
   while IFS= read -r rule_file; do
     [[ -z "$rule_file" ]] && continue
+    debug "eval: scanning $rule_file"
 
     local rule_count
     rule_count=$(yq '.rules | length' "$rule_file" 2>/dev/null)
@@ -185,7 +211,6 @@ main() {
       enabled=$(echo "$rule" | jq -r 'if has("enabled") then .enabled | tostring else empty end')
       [[ "$enabled" == "false" ]] && continue
 
-      # Check if rule matches this event
       local on_field
       on_field=$(echo "$rule" | jq -r '.on // empty')
       [[ -z "$on_field" ]] && continue
@@ -196,15 +221,14 @@ main() {
         debug "eval: evaluating rule '$name'"
 
         if _eval_rule "$rule" "$input"; then
-          : # rule didn't produce a decision, continue
+          :
         else
-          exit 0  # decision was emitted, stop
+          exit 0
         fi
       fi
     done
   done < <(_rule_files)
 
-  # No rule matched — pass through
   exit 0
 }
 
