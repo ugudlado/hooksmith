@@ -1,30 +1,36 @@
 #!/bin/bash
 # compact.sh — Compiler for hooksmith compact rule format.
 #
-# Compact format example (hooksmith.yaml):
+# Three mechanisms, one contract: every hook outputs a reason.
 #
 #   rules:
+#     # "if" — regex match, static reason in the action value
 #     - on: PreToolUse Bash
 #       if: command =~ 'rm\s+-rf'
 #       deny: Destructive command blocked
 #
-#     - on: PreToolUse Write|Edit
-#       if: file_path =~ '\.env$'
-#       ask: Modifying sensitive file
-#
+#     # "run" — shell code (inline or file path), dynamic reason from stdout
 #     - on: PreToolUse Bash
-#       check: |
+#       run: |
 #         cmd=$(get_field command)
 #         [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
 #       deny: true
 #
+#     # "run" — external script file, same contract
 #     - on: PreToolUse Bash
-#       script: ~/scripts/guard.sh
-#       deny: Custom guard
+#       run: ~/scripts/guard.sh
+#       deny: true
 #
+#     # "prompt" — LLM evaluates
 #     - on: PreToolUse Write
 #       prompt: Check if this write is safe
 #       warn: AI flagged concern
+#
+# The "run" contract:
+#   - Script gets $INPUT (hook JSON) and get_field helper via hooklib
+#   - Script outputs a reason string to stdout
+#   - Non-empty output → action fires with that reason
+#   - Empty output → pass through (allow)
 #
 # Optional per-rule: timeout, fail_mode, async, enabled
 #
@@ -89,7 +95,7 @@ _compile_one_rule() {
   local action="" message=""
   for a in deny ask warn context; do
     local val
-    val=$(echo "$rule" | jq -r ".$a // empty")
+    val=$(echo "$rule" | jq -r "if has(\"$a\") then .$a | tostring else empty end")
     if [[ -n "$val" ]]; then
       action="$a"; message="$val"; break
     fi
@@ -101,21 +107,19 @@ _compile_one_rule() {
     echo "ERROR [$prefix]: '$action' not valid for event '$event'" >&2; return 1
   fi
 
-  # ── Detect mechanism (exactly one of: if, check, script, prompt) ──
-  local if_field check_field script_field prompt_field
+  # ── Detect mechanism (exactly one of: if, run, prompt) ──
+  local if_field run_field prompt_field
   if_field=$(echo "$rule" | jq -r '.["if"] // empty')
-  check_field=$(echo "$rule" | jq -r '.check // empty')
-  script_field=$(echo "$rule" | jq -r '.script // empty')
+  run_field=$(echo "$rule" | jq -r '.run // empty')
   prompt_field=$(echo "$rule" | jq -r '.prompt // empty')
 
   local mech_count=0
   [[ -n "$if_field" ]] && mech_count=$((mech_count + 1))
-  [[ -n "$check_field" ]] && mech_count=$((mech_count + 1))
-  [[ -n "$script_field" ]] && mech_count=$((mech_count + 1))
+  [[ -n "$run_field" ]] && mech_count=$((mech_count + 1))
   [[ -n "$prompt_field" ]] && mech_count=$((mech_count + 1))
 
   if [[ $mech_count -ne 1 ]]; then
-    echo "ERROR [$prefix]: exactly one of 'if', 'check', 'script', 'prompt' required" >&2; return 1
+    echo "ERROR [$prefix]: exactly one of 'if', 'run', 'prompt' required" >&2; return 1
   fi
 
   # ── Optional fields ──
@@ -132,12 +136,8 @@ _compile_one_rule() {
     entry=$(_build_regex_entry "$prefix" "$if_field" "$message" "$action" "$timeout")
     [[ $? -ne 0 ]] && return 1
 
-  elif [[ -n "$check_field" ]]; then
-    entry=$(_build_check_entry "$prefix" "$check_field" "$action" "$timeout")
-    [[ $? -ne 0 ]] && return 1
-
-  elif [[ -n "$script_field" ]]; then
-    entry=$(_build_script_entry "$prefix" "$script_field" "$timeout")
+  elif [[ -n "$run_field" ]]; then
+    entry=$(_build_run_entry "$prefix" "$run_field" "$action" "$timeout")
     [[ $? -ne 0 ]] && return 1
 
   elif [[ -n "$prompt_field" ]]; then
@@ -182,41 +182,41 @@ _build_regex_entry() {
   fi
 
   # Bake directly into hooks.json command — no runtime YAML parse needed.
-  # Shell-quote each arg so spaces/special chars survive.
   jq -n \
     --arg f "$field" --arg p "$pattern" --arg m "$message" --arg a "$action" \
     --argjson t "$timeout" \
     '{type:"command",command:("bash ${CLAUDE_PLUGIN_ROOT}/lib/regex-match.sh " + ($f | @sh) + " " + ($p | @sh) + " " + ($m | @sh) + " " + ($a | @sh)),timeout:$t}'
 }
 
-# ── Build a check entry (inline shell logic, baked as base64) ──
+# ── Build a run entry (unified: inline script or file path) ──
+#
+# If the run value is a path to an existing .sh file → read it.
+# Otherwise → treat as inline script.
+# Either way, base64-encode and invoke via run-hook.sh.
 
-_build_check_entry() {
-  local prefix="$1" check_script="$2" action="$3" timeout="$4"
+_build_run_entry() {
+  local prefix="$1" run_field="$2" action="$3" timeout="$4"
 
-  # Base64-encode the check script so it survives JSON + shell quoting
-  local check_b64
-  check_b64=$(printf '%s' "$check_script" | base64 -w0 2>/dev/null || printf '%s' "$check_script" | base64)
+  local script_content
 
-  jq -n \
-    --arg a "$action" --arg b "$check_b64" \
-    --argjson t "$timeout" \
-    '{type:"command",command:("HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/check-runner.sh " + ($a | @sh) + " " + ($b | @sh)),timeout:$t}'
-}
-
-# ── Build a script entry ──
-
-_build_script_entry() {
-  local prefix="$1" script_field="$2" timeout="$3"
-
-  local script_path
-  script_path=$(expand_tilde "$script_field")
-  if [[ ! -f "$script_path" ]]; then
-    echo "ERROR [$prefix]: script not found: $script_field" >&2; return 1
+  # Check if it's a file path (starts with / or ~ and ends with .sh, or is a simple path)
+  local resolved_path
+  resolved_path=$(expand_tilde "$run_field")
+  if [[ -f "$resolved_path" ]]; then
+    # External script file — read its content
+    script_content=$(cat "$resolved_path")
+    debug "run: loaded script from $run_field"
+  else
+    # Inline script
+    script_content="$run_field"
   fi
 
+  # Base64-encode so it survives JSON + shell quoting
+  local b64
+  b64=$(printf '%s' "$script_content" | base64 -w0 2>/dev/null || printf '%s' "$script_content" | base64)
+
   jq -n \
-    --arg s "$script_path" \
+    --arg a "$action" --arg b "$b64" \
     --argjson t "$timeout" \
-    '{type:"command",command:("HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash " + $s),timeout:$t}'
+    '{type:"command",command:("HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/run-hook.sh " + ($a | @sh) + " " + ($b | @sh)),timeout:$t}'
 }

@@ -603,13 +603,13 @@ test_compact_validation() {
   compact_teardown
 }
 
-test_compact_check_deny() {
-  echo "compact: check mechanism (deny)"
+test_compact_run_inline_deny() {
+  echo "compact: run inline (deny)"
   compact_setup
 
   local yaml='rules:
   - on: PreToolUse Bash
-    check: |
+    run: |
       cmd=$(get_field command)
       if [[ "$cmd" =~ ^sudo ]]; then
         echo "Root access not allowed"
@@ -621,26 +621,24 @@ test_compact_check_deny() {
   compact_build "$yaml" >/dev/null 2>&1
   local hf="$COMPACT_DIR/hooks.json"
 
-  # Should deny sudo
   local result
   result=$(compact_run "$hf" "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
-  assert_denied "check: git push denied" "$result"
-  assert_contains "check: reason in output" "$result" "Direct push not permitted"
+  assert_denied "run-inline: git push denied" "$result"
+  assert_contains "run-inline: reason in output" "$result" "Direct push not permitted"
 
-  # Should allow safe command
   result=$(compact_run "$hf" "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
-  assert_allowed "check: safe command allowed" "$result"
+  assert_allowed "run-inline: safe command allowed" "$result"
 
   compact_teardown
 }
 
-test_compact_check_ask() {
-  echo "compact: check mechanism (ask)"
+test_compact_run_inline_ask() {
+  echo "compact: run inline (ask)"
   compact_setup
 
   local yaml='rules:
   - on: PreToolUse Write
-    check: |
+    run: |
       path=$(get_field file_path)
       if [[ "$path" =~ \.(lock|lockb)$ ]] || [[ "$path" =~ lock\.yaml$ ]]; then
         echo "Lock file modification: $path"
@@ -650,24 +648,23 @@ test_compact_check_ask() {
   compact_build "$yaml" >/dev/null 2>&1
   local hf="$COMPACT_DIR/hooks.json"
 
-  # Lock file should trigger ask
+  local result
   result=$(compact_run "$hf" "$FIXTURES/write-lockfile.json" "PreToolUse" "Write")
-  assert_asks "check-ask: lock file triggers ask" "$result"
+  assert_asks "run-inline-ask: lock file triggers ask" "$result"
 
-  # Normal file should pass
   result=$(compact_run "$hf" "$FIXTURES/write-safe.json" "PreToolUse" "Write")
-  assert_allowed "check-ask: normal file allowed" "$result"
+  assert_allowed "run-inline-ask: normal file allowed" "$result"
 
   compact_teardown
 }
 
-test_compact_check_reason() {
-  echo "compact: check provides dynamic reason"
+test_compact_run_dynamic_reason() {
+  echo "compact: run provides dynamic reason"
   compact_setup
 
   local yaml='rules:
   - on: PreToolUse Bash
-    check: |
+    run: |
       cmd=$(get_field command)
       echo "Command was: $cmd"
     warn: true'
@@ -677,8 +674,39 @@ test_compact_check_reason() {
 
   local result
   result=$(compact_run "$hf" "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
-  # The reason should contain the actual command from the fixture
-  assert_contains "check-reason: dynamic reason includes command" "$result" "ls -la"
+  assert_contains "run-reason: dynamic reason includes command" "$result" "ls -la"
+
+  compact_teardown
+}
+
+test_compact_run_file() {
+  echo "compact: run external file"
+  compact_setup
+
+  # Create an external script that follows the same contract
+  local script_file="$COMPACT_DIR/my-guard.sh"
+  cat > "$script_file" << 'SCRIPT'
+source "$HOOKLIB"
+read_input
+cmd=$(get_field command)
+[[ "$cmd" =~ git.+push ]] && echo "Push blocked by external guard"
+SCRIPT
+
+  local yaml="rules:
+  - on: PreToolUse Bash
+    run: $script_file
+    deny: true"
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  local result
+  result=$(compact_run "$hf" "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "run-file: git push denied" "$result"
+  assert_contains "run-file: reason from external script" "$result" "Push blocked by external guard"
+
+  result=$(compact_run "$hf" "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "run-file: safe command allowed" "$result"
 
   compact_teardown
 }
@@ -718,10 +746,12 @@ test_compact_disabled
 echo ""
 test_compact_validation
 echo ""
-test_compact_check_deny
+test_compact_run_inline_deny
 echo ""
-test_compact_check_ask
+test_compact_run_inline_ask
 echo ""
-test_compact_check_reason
+test_compact_run_dynamic_reason
+echo ""
+test_compact_run_file
 echo ""
 print_summary

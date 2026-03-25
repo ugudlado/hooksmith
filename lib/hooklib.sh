@@ -29,7 +29,7 @@ block_stop() {
   exit 0
 }
 
-read_input() { INPUT=$(cat); export INPUT; }
+read_input() { [[ -n "${INPUT:-}" ]] && return; INPUT=$(cat); export INPUT; }
 
 get_field() {
   local field="$1" json="${INPUT:-$(cat)}"
