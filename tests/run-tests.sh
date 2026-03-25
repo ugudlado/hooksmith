@@ -386,6 +386,223 @@ test_engine_disabled() {
   engine_teardown
 }
 
+# ── Compact format tests ──
+
+compact_setup() {
+  COMPACT_DIR=$(mktemp -d)
+  trap 'rm -rf "$COMPACT_DIR"' EXIT
+}
+
+compact_teardown() {
+  rm -rf "$COMPACT_DIR"
+  trap - EXIT
+}
+
+# Write a compact hooksmith.yaml and build it
+compact_build() {
+  local yaml_content="$1"
+  local output_file="$COMPACT_DIR/hooks.json"
+  local rules_dir="$COMPACT_DIR/empty_rules"
+  mkdir -p "$rules_dir"
+
+  # Write compact file where build.sh looks for it (.hooksmith/hooksmith.yaml relative to CWD)
+  mkdir -p "$COMPACT_DIR/.hooksmith"
+  printf '%s\n' "$yaml_content" > "$COMPACT_DIR/.hooksmith/hooksmith.yaml"
+
+  # Build from COMPACT_DIR so .hooksmith/hooksmith.yaml is found
+  (cd "$COMPACT_DIR" && \
+    USER_RULES_DIR="$rules_dir" PROJECT_RULES_DIR="$COMPACT_DIR/.hooksmith/rules" \
+    OUTPUT="$output_file" bash "${REPO_ROOT}/build.sh" 2>&1)
+
+  [[ -f "$output_file" ]] && cat "$output_file"
+}
+
+# Extract hooks.json from compact_build output (skip non-JSON status lines)
+compact_json() {
+  local output="$1"
+  # The hooks.json file is already written; extract JSON using jq
+  echo "$output" | jq -s 'map(select(type == "object" and has("hooks"))) | .[0] // empty' 2>/dev/null
+}
+
+# Run a baked compact hook by piping fixture through the generated command
+compact_run() {
+  local hooks_json_file="$1" fixture="$2" event="$3" matcher="${4:-}"
+
+  if [[ ! -f "$hooks_json_file" ]]; then
+    echo ""; return 0
+  fi
+
+  # Extract the command for the given event+matcher
+  local cmd
+  if [[ -n "$matcher" ]]; then
+    cmd=$(jq -r --arg e "$event" --arg m "$matcher" \
+      '.hooks[$e][] | select(.matcher == $m) | .hooks[0].command' "$hooks_json_file")
+  else
+    cmd=$(jq -r --arg e "$event" \
+      '.hooks[$e][] | select(.matcher == null or .matcher == "") | .hooks[0].command' "$hooks_json_file")
+  fi
+
+  if [[ -z "$cmd" || "$cmd" == "null" ]]; then
+    echo ""
+    return 0
+  fi
+
+  # Replace ${CLAUDE_PLUGIN_ROOT} with actual path
+  cmd="${cmd//\$\{CLAUDE_PLUGIN_ROOT\}/$REPO_ROOT}"
+
+  # Run the command with fixture as stdin
+  bash -c "$cmd" < "$fixture" 2>/dev/null
+}
+
+test_compact_basic() {
+  echo "compact: basic rules"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Bash
+    if: command =~ git\s+push
+    deny: No pushing allowed'
+
+  local out
+  out=$(compact_build "$yaml")
+  local hf="$COMPACT_DIR/hooks.json"
+  assert_contains "compact build: generated" "$out" "Generated"
+
+  local content
+  content=$(cat "$hf" 2>/dev/null)
+  assert_contains "compact build: hooks key present" "$content" '"hooks"'
+  assert_contains "compact build: PreToolUse present" "$content" '"PreToolUse"'
+  assert_contains "compact build: regex-match.sh baked" "$content" "regex-match.sh"
+
+  # Run against git push fixture — should deny
+  local result
+  result=$(compact_run "$hf" "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "compact: git push denied" "$result"
+
+  # Run against safe fixture — should allow
+  result=$(compact_run "$hf" "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "compact: ls -la allowed" "$result"
+
+  compact_teardown
+}
+
+test_compact_actions() {
+  echo "compact: action types"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Bash
+    if: command =~ danger
+    deny: Blocked
+
+  - on: PreToolUse Bash
+    if: command =~ askme
+    ask: Please confirm
+
+  - on: PreToolUse Bash
+    if: command =~ careful
+    warn: Be careful'
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  local hook_count
+  hook_count=$(jq '.hooks.PreToolUse[0].hooks | length' "$hf")
+  if [[ "$hook_count" == "3" ]]; then
+    _pass "compact: 3 hooks compiled"
+  else
+    _fail "compact: 3 hooks compiled" "expected 3, got $hook_count"
+  fi
+
+  compact_teardown
+}
+
+test_compact_prompt() {
+  echo "compact: prompt mechanism"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Write
+    prompt: Check if this file write is safe
+    warn: AI safety check'
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  local hook_type
+  hook_type=$(jq -r '.hooks.PreToolUse[0].hooks[0].type' "$hf")
+  if [[ "$hook_type" == "prompt" ]]; then
+    _pass "compact prompt: type is prompt"
+  else
+    _fail "compact prompt: type is prompt" "got '$hook_type'"
+  fi
+
+  local prompt_text
+  prompt_text=$(jq -r '.hooks.PreToolUse[0].hooks[0].prompt' "$hf")
+  assert_contains "compact prompt: prompt text present" "$prompt_text" "safe"
+
+  compact_teardown
+}
+
+test_compact_disabled() {
+  echo "compact: disabled rules"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Bash
+    if: command =~ danger
+    deny: Blocked
+    enabled: false
+
+  - on: PreToolUse Bash
+    if: command =~ other
+    deny: Also blocked'
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  local hook_count
+  hook_count=$(jq '.hooks.PreToolUse[0].hooks | length' "$hf")
+  if [[ "$hook_count" == "1" ]]; then
+    _pass "compact disabled: skipped disabled rule"
+  else
+    _fail "compact disabled: skipped disabled rule" "expected 1 hook, got $hook_count"
+  fi
+
+  compact_teardown
+}
+
+test_compact_validation() {
+  echo "compact: validation errors"
+  compact_setup
+
+  # Missing action
+  local yaml='rules:
+  - on: PreToolUse Bash
+    if: command =~ danger'
+  local out
+  out=$(compact_build "$yaml" 2>&1)
+  assert_contains "compact: missing action error" "$out" "ERROR"
+
+  # Bad event
+  yaml='rules:
+  - on: FakeEvent Bash
+    if: command =~ danger
+    deny: Blocked'
+  out=$(compact_build "$yaml" 2>&1)
+  assert_contains "compact: bad event error" "$out" "ERROR"
+
+  # ask on wrong event
+  yaml='rules:
+  - on: SessionStart
+    if: command =~ danger
+    ask: Should not work'
+  out=$(compact_build "$yaml" 2>&1)
+  assert_contains "compact: ask on SessionStart error" "$out" "ERROR"
+
+  compact_teardown
+}
+
 # ── Run ──
 
 echo "Hooksmith Test Suite"
@@ -408,5 +625,17 @@ echo ""
 test_engine_build
 echo ""
 test_engine_disabled
+echo ""
+echo "compact"
+echo "───────"
+test_compact_basic
+echo ""
+test_compact_actions
+echo ""
+test_compact_prompt
+echo ""
+test_compact_disabled
+echo ""
+test_compact_validation
 echo ""
 print_summary

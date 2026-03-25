@@ -10,6 +10,7 @@ OUTPUT="${OUTPUT:-$SCRIPT_DIR/hooks/hooks.json}"
 source "${SCRIPT_DIR}/lib/config.sh"
 source "${SCRIPT_DIR}/lib/parse.sh"
 source "${SCRIPT_DIR}/lib/validate.sh"
+source "${SCRIPT_DIR}/lib/compact.sh"
 
 USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
 PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"
@@ -34,6 +35,16 @@ collect_rules() {
       cp "$f" "$tmpdir/$name"
     done
   fi
+}
+
+# ── Append a compiled entry to the group files ──
+
+append_to_group() {
+  local groups_dir="$1" event="$2" matcher="$3" entry="$4"
+  local group_key="${event}|${matcher}"
+  local group_file="$groups_dir/$(echo "$group_key" | sed 's/[^a-zA-Z0-9|]/_/g')"
+  echo "$group_key" > "$group_file.key"
+  echo "$entry" >> "$group_file.entries"
 }
 
 # ── Generate a single hook entry JSON ──
@@ -86,66 +97,78 @@ main() {
 
   collect_rules "$tmpdir"
 
-  # Check if any rules found
+  # Process each rule — collect entries grouped by event|matcher
+  local groups_dir="$tmpdir/groups"
+  mkdir -p "$groups_dir"
+  local count=0 errors=0
+
+  # ── Phase 1: Compile verbose rules (individual YAML files) ──
+
   local rule_files=()
   for f in "$tmpdir"/*.yaml; do
     [[ -f "$f" ]] && rule_files+=("$f")
   done
 
-  if [[ ${#rule_files[@]} -eq 0 ]]; then
+  if [[ ${#rule_files[@]} -gt 0 ]]; then
+    IFS=$'\n' rule_files=($(printf '%s\n' "${rule_files[@]}" | sort)); unset IFS
+    local seen_ids=""
+
+    for rule_file in "${rule_files[@]}"; do
+      local name; name=$(basename "$rule_file" .yaml)
+      local parsed; parsed=$(parse_yaml "$rule_file")
+
+      local enabled; enabled=$(get_val "$parsed" "enabled")
+      if [[ "$enabled" == "false" ]]; then
+        continue
+      fi
+
+      if ! validate_rule "$name" "$parsed"; then
+        errors=$((errors + 1)); continue
+      fi
+
+      local rule_id; rule_id=$(get_val "$parsed" "id")
+      if [[ " $seen_ids " == *" $rule_id "* ]]; then
+        echo "ERROR [$name]: duplicate id '$rule_id'" >&2
+        errors=$((errors + 1)); continue
+      fi
+      seen_ids="$seen_ids $rule_id"
+
+      local entry; entry=$(generate_entry "$name" "$parsed")
+      local event matcher
+      event=$(get_val "$parsed" "event")
+      matcher=$(get_val "$parsed" "matcher")
+      append_to_group "$groups_dir" "$event" "$matcher" "$entry"
+      count=$((count + 1))
+    done
+  fi
+
+  # ── Phase 2: Compile compact rules (hooksmith.yaml files) ──
+
+  local compact_files=(
+    "$HOME/.config/hooksmith/hooksmith.yaml"
+    ".hooksmith/hooksmith.yaml"
+  )
+  for compact_file in "${compact_files[@]}"; do
+    if [[ -f "$compact_file" ]]; then
+      debug "compiling compact rules from $compact_file"
+      while IFS= read -r line; do
+        local c_event c_matcher c_entry
+        c_event=$(echo "$line" | jq -r '.event')
+        c_matcher=$(echo "$line" | jq -r '.matcher')
+        c_entry=$(echo "$line" | jq -c '.entry')
+        append_to_group "$groups_dir" "$c_event" "$c_matcher" "$c_entry"
+        count=$((count + 1))
+      done < <(compile_compact_rules "$compact_file")
+    fi
+  done
+
+  # Check if anything was compiled
+  if [[ $count -eq 0 && $errors -eq 0 ]]; then
     echo "WARNING: No rule files found." >&2
     echo '{"hooks":{}}' | jq '.' > "$OUTPUT"
     echo "Generated $OUTPUT with 0 rules."
     return 0
   fi
-
-  # Sort rule files alphabetically
-  IFS=$'\n' rule_files=($(printf '%s\n' "${rule_files[@]}" | sort)); unset IFS
-
-  # Process each rule — collect entries grouped by event|matcher
-  local groups_dir="$tmpdir/groups"
-  mkdir -p "$groups_dir"
-  local count=0 errors=0
-  local seen_ids=""  # space-separated list for uniqueness tracking
-
-  for rule_file in "${rule_files[@]}"; do
-    local name; name=$(basename "$rule_file" .yaml)
-    local parsed; parsed=$(parse_yaml "$rule_file")
-
-    # Skip disabled rules
-    local enabled; enabled=$(get_val "$parsed" "enabled")
-    if [[ "$enabled" == "false" ]]; then
-      continue
-    fi
-
-    # Validate
-    if ! validate_rule "$name" "$parsed"; then
-      errors=$((errors + 1))
-      continue
-    fi
-
-    # Check id uniqueness (post-merge set)
-    local rule_id; rule_id=$(get_val "$parsed" "id")
-    if [[ " $seen_ids " == *" $rule_id "* ]]; then
-      echo "ERROR [$name]: duplicate id '$rule_id'" >&2
-      errors=$((errors + 1))
-      continue
-    fi
-    seen_ids="$seen_ids $rule_id"
-
-    # Generate entry
-    local entry; entry=$(generate_entry "$name" "$parsed")
-    local event matcher group_key
-    event=$(get_val "$parsed" "event")
-    matcher=$(get_val "$parsed" "matcher")
-    group_key="${event}|${matcher}"
-
-    # Append to group file (one JSON object per line)
-    local group_file="$groups_dir/$(echo "$group_key" | sed 's/[^a-zA-Z0-9|]/_/g')"
-    echo "$group_key" > "$group_file.key"
-    echo "$entry" >> "$group_file.entries"
-    count=$((count + 1))
-  done
 
   # Assemble hooks.json
   local hooks_json='{"hooks":{}}'
