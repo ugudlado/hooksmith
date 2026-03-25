@@ -44,7 +44,7 @@ _map_is_fresh() {
   return 0
 }
 
-# ── Build the map: just name, event, matcher, file, index ──
+# ── Build the map: just name, file, index ──
 
 _build_map() {
   debug "map: rebuilding $MAP_FILE"
@@ -58,23 +58,14 @@ _build_map() {
 
     local i
     for (( i=0; i<rule_count; i++ )); do
-      # Only extract routing fields — not the full rule
-      local on_field name enabled
-      on_field=$(yq -r ".rules[$i].on // empty" "$rule_file" 2>/dev/null)
+      local name enabled
       name=$(yq -r ".rules[$i].name // \"rule-$((i+1))\"" "$rule_file" 2>/dev/null)
       enabled=$(yq -r "if .rules[$i] | has(\"enabled\") then .rules[$i].enabled | tostring else empty end" "$rule_file" 2>/dev/null)
-
-      [[ -z "$on_field" ]] && continue
       [[ "$enabled" == "false" ]] && continue
 
-      local event="${on_field%% *}"
-      local matcher="${on_field#"$event"}"
-      matcher="${matcher# }"
-
       map_json=$(echo "$map_json" | jq -c \
-        --arg name "$name" --arg event "$event" --arg matcher "$matcher" \
-        --arg file "$rule_file" --argjson idx "$i" \
-        '. + [{name:$name, event:$event, matcher:$matcher, file:$file, index:$idx}]')
+        --arg name "$name" --arg file "$rule_file" --argjson idx "$i" \
+        '. + [{name:$name, file:$file, index:$idx}]')
     done
   done < <(_rule_files)
 
@@ -103,6 +94,24 @@ _parse_context() {
   HOOK_EVENT=$(echo "$json" | jq -r '.hook_event_name // empty')
   TOOL_NAME=$(echo "$json" | jq -r '.tool_name // empty')
   debug "eval: event=$HOOK_EVENT tool=$TOOL_NAME"
+}
+
+# ── Check if a rule's "on" field matches the current event+tool ──
+
+_rule_matches() {
+  local on_field="$1"
+  local rule_event="${on_field%% *}"
+  local rule_matcher="${on_field#"$rule_event"}"
+  rule_matcher="${rule_matcher# }"
+
+  [[ "$rule_event" != "$HOOK_EVENT" ]] && return 1
+
+  if [[ -n "$rule_matcher" && -n "$TOOL_NAME" ]]; then
+    local re="^(${rule_matcher})$"
+    [[ "$TOOL_NAME" =~ $re ]] || return 1
+  fi
+
+  return 0
 }
 
 # ── Check if matcher matches the current tool ──
@@ -216,31 +225,28 @@ main() {
 
   _ensure_map
 
-  # Query map: get entries matching this event
-  local entries
-  entries=$(jq -c --arg e "$HOOK_EVENT" '[.[] | select(.event == $e)]' "$MAP_FILE")
-
   local entry_count
-  entry_count=$(echo "$entries" | jq 'length')
-  debug "eval: $entry_count rules for event $HOOK_EVENT"
+  entry_count=$(jq 'length' "$MAP_FILE")
+  debug "eval: $entry_count rules in map"
 
   local i
   for (( i=0; i<entry_count; i++ )); do
-    local entry
-    entry=$(echo "$entries" | jq -c ".[$i]")
+    local name file idx
+    name=$(jq -r ".[$i].name" "$MAP_FILE")
+    file=$(jq -r ".[$i].file" "$MAP_FILE")
+    idx=$(jq -r ".[$i].index" "$MAP_FILE")
 
-    local matcher name file idx
-    matcher=$(echo "$entry" | jq -r '.matcher')
-    name=$(echo "$entry" | jq -r '.name')
-    file=$(echo "$entry" | jq -r '.file')
-    idx=$(echo "$entry" | jq -r '.index')
+    # Load rule from YAML and check event/matcher
+    local rule
+    rule=$(_load_rule "$file" "$idx")
+    [[ -z "$rule" ]] && continue
 
-    if _matcher_matches "$matcher"; then
+    local on_field
+    on_field=$(echo "$rule" | jq -r '.on // empty')
+    [[ -z "$on_field" ]] && continue
+
+    if _rule_matches "$on_field"; then
       debug "eval: evaluating rule '$name' from $file"
-
-      # Load the actual rule from YAML only when needed
-      local rule
-      rule=$(_load_rule "$file" "$idx")
 
       if _eval_rule "$rule" "$input"; then
         :

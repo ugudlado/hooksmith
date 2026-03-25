@@ -86,16 +86,12 @@ while IFS= read -r rule_file; do
   rc=$(yq '.rules | length' "$rule_file" 2>/dev/null)
   [[ -z "$rc" || "$rc" == "0" ]] && continue
   for (( i=0; i<rc; i++ )); do
-    on_field=$(yq -r ".rules[$i].on // empty" "$rule_file" 2>/dev/null)
     name=$(yq -r ".rules[$i].name // \"rule-$((i+1))\"" "$rule_file" 2>/dev/null)
     enabled=$(yq -r "if .rules[$i] | has(\"enabled\") then .rules[$i].enabled | tostring else empty end" "$rule_file" 2>/dev/null)
-    [[ -z "$on_field" ]] && continue
     [[ "$enabled" == "false" ]] && continue
-    ev="${on_field%% *}"; mt="${on_field#"$ev"}"; mt="${mt# }"
     map_json=$(echo "$map_json" | jq -c \
-      --arg name "$name" --arg event "$ev" --arg matcher "$mt" \
-      --arg file "$rule_file" --argjson idx "$i" \
-      '. + [{name:$name, event:$event, matcher:$matcher, file:$file, index:$idx}]')
+      --arg name "$name" --arg file "$rule_file" --argjson idx "$i" \
+      '. + [{name:$name, file:$file, index:$idx}]')
   done
 done < <(_init_rule_files)
 
