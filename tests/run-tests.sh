@@ -711,6 +711,156 @@ SCRIPT
   compact_teardown
 }
 
+# ── Eval (no-build) tests ──
+
+eval_setup() {
+  EVAL_DIR=$(mktemp -d)
+  mkdir -p "$EVAL_DIR/.hooksmith"
+  trap 'rm -rf "$EVAL_DIR"' EXIT
+}
+
+eval_teardown() {
+  rm -rf "$EVAL_DIR"
+  trap - EXIT
+}
+
+eval_run() {
+  local fixture="$1" event="$2" tool="${3:-}"
+  local context
+  context=$(cat "$fixture")
+  # Inject hook_event_name and tool_name into the fixture
+  context=$(echo "$context" | jq --arg e "$event" '. + {hook_event_name:$e}')
+  if [[ -n "$tool" ]]; then
+    context=$(echo "$context" | jq --arg t "$tool" '. + {tool_name:$t}')
+  fi
+  echo "$context" | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null)
+}
+
+test_eval_match() {
+  echo "eval: match rules (no build)"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: block-push
+    on: PreToolUse Bash
+    match: command =~ git\s+push
+    deny: No pushing allowed
+YAML
+
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "eval-match: git push denied" "$result"
+
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "eval-match: safe command allowed" "$result"
+
+  eval_teardown
+}
+
+test_eval_run_inline() {
+  echo "eval: run inline (no build)"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: sudo-guard
+    on: PreToolUse Bash
+    run: |
+      cmd=$(get_field command)
+      [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
+    deny: true
+YAML
+
+  local result
+  # Create a sudo fixture
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "eval-run: sudo denied" "$result"
+  assert_contains "eval-run: dynamic reason" "$result" "Root access not allowed"
+
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "eval-run: safe command allowed" "$result"
+
+  eval_teardown
+}
+
+test_eval_matcher_routing() {
+  echo "eval: matcher routing (no build)"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: bash-only
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Bash danger blocked
+
+  - name: write-only
+    on: PreToolUse Write
+    match: file_path =~ \.env$
+    ask: Sensitive file
+YAML
+
+  # Bash rule should not fire for Write tool
+  local result
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"src/app.ts"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_allowed "eval-routing: Write tool doesn't trigger Bash rule" "$result"
+
+  # Write rule should fire for .env
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":".env"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_asks "eval-routing: .env triggers Write ask" "$result"
+
+  eval_teardown
+}
+
+test_eval_disabled() {
+  echo "eval: disabled rules (no build)"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: disabled-rule
+    on: PreToolUse Bash
+    match: command =~ ls
+    deny: Should not fire
+    enabled: false
+
+  - name: active-rule
+    on: PreToolUse Bash
+    match: command =~ git
+    deny: Git blocked
+YAML
+
+  local result
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "eval-disabled: disabled rule doesn't fire" "$result"
+
+  eval_teardown
+}
+
+test_eval_readable_names() {
+  echo "eval: readable names in debug output"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: my-custom-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Blocked
+YAML
+
+  local stderr_out
+  stderr_out=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"danger zone"}}' | \
+    (cd "$EVAL_DIR" && HOOKSMITH_DEBUG=1 bash "$HOOKSMITH" eval 2>&1 >/dev/null))
+  assert_contains "eval-names: rule name in debug" "$stderr_out" "my-custom-guard"
+
+  eval_teardown
+}
+
 # ── Run ──
 
 echo "Hooksmith Test Suite"
@@ -753,5 +903,17 @@ echo ""
 test_compact_run_dynamic_reason
 echo ""
 test_compact_run_file
+echo ""
+echo "eval (no-build)"
+echo "────────────────"
+test_eval_match
+echo ""
+test_eval_run_inline
+echo ""
+test_eval_matcher_routing
+echo ""
+test_eval_disabled
+echo ""
+test_eval_readable_names
 echo ""
 print_summary

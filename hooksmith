@@ -1,19 +1,23 @@
 #!/bin/bash
 # hooksmith — CLI dispatcher for hooksmith plugin.
 # Usage: hooksmith <command> [args...]
-#   hooksmith run <id>          — Execute hook by id
-#   hooksmith list [opts]       — List registered hooks
-#   hooksmith convert [opts]    — Convert settings.json hooks to YAML rules
-#   hooksmith build             — Rebuild hooks.json from YAML rules
+#   hooksmith eval               — Evaluate rules (called by hooks.json at runtime)
+#   hooksmith init               — Generate hooks.json routing table
+#   hooksmith list [opts]        — List registered hooks
+#   hooksmith run <id>           — Execute verbose rule by id (legacy)
+#   hooksmith convert [opts]     — Convert settings.json hooks to YAML rules
+#   hooksmith build              — Compile rules to hooks.json (legacy)
 
 PLUGIN_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 case "${1:-}" in
+  eval)    shift; exec bash "${PLUGIN_ROOT}/lib/runtime/eval.sh" "$@" ;;
+  init)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/init.sh" "$@" ;;
   list)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/list.sh" "$@" ;;
   run)     shift; exec bash "${PLUGIN_ROOT}/lib/runtime/dispatch.sh" "$@" ;;
   convert) shift; exec bash "${PLUGIN_ROOT}/lib/cli/convert.sh" "$@" ;;
   build)   shift; exec bash "${PLUGIN_ROOT}/build.sh" "$@" ;;
   *)       echo "hooksmith: unknown command '${1:-}'" >&2
-           echo "Commands: run, list, convert, build" >&2
+           echo "Commands: eval, init, list, convert, build" >&2
            exit 1 ;;
 esac
