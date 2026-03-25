@@ -9,9 +9,9 @@
 PLUGIN_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 case "${1:-}" in
-  list)    shift; exec bash "${PLUGIN_ROOT}/lib/list.sh" "$@" ;;
-  run)     shift; exec bash "${PLUGIN_ROOT}/lib/run.sh" "$@" ;;
-  convert) shift; exec bash "${PLUGIN_ROOT}/lib/convert.sh" "$@" ;;
+  list)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/list.sh" "$@" ;;
+  run)     shift; exec bash "${PLUGIN_ROOT}/lib/runtime/dispatch.sh" "$@" ;;
+  convert) shift; exec bash "${PLUGIN_ROOT}/lib/cli/convert.sh" "$@" ;;
   build)   shift; exec bash "${PLUGIN_ROOT}/build.sh" "$@" ;;
   *)       echo "hooksmith: unknown command '${1:-}'" >&2
            echo "Commands: run, list, convert, build" >&2

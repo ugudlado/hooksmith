@@ -1,14 +1,14 @@
 #!/bin/bash
-# run.sh — Unified hook executor. Resolves hook id to YAML rule and executes.
-# Usage: run.sh <id>
+# dispatch.sh — Verbose rule dispatcher. Resolves hook id to YAML rule and executes.
+# Usage: dispatch.sh <id>
 # Receives hook context JSON on stdin from Claude Code.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "${SCRIPT_DIR}/config.sh"
-source "${SCRIPT_DIR}/parse.sh"
+source "${SCRIPT_DIR}/../core/config.sh"
+source "${SCRIPT_DIR}/../core/parse.sh"
 
-PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
 PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"
 
@@ -83,7 +83,7 @@ main() {
       message=$(get_val "$parsed" "message")
       result=$(get_val "$parsed" "result")
       [[ -z "$message" ]] && message="Blocked by hooksmith rule: $id"
-      if output=$(echo "$input" | bash "${PLUGIN_ROOT}/lib/regex-match.sh" "$field" "$pattern" "$message" "$result" 2>/dev/null); then
+      if output=$(echo "$input" | bash "${PLUGIN_ROOT}/lib/runtime/match.sh" "$field" "$pattern" "$message" "$result" 2>/dev/null); then
         if [[ -n "$output" ]]; then echo "$output"; fi
       else
         _handle_failure "$fail_mode"
@@ -98,7 +98,7 @@ main() {
         _handle_failure "$fail_mode"
         return
       fi
-      if output=$(echo "$input" | HOOKLIB="${PLUGIN_ROOT}/lib/hooklib.sh" bash "$script_path" 2>/dev/null); then
+      if output=$(echo "$input" | HOOKLIB="${PLUGIN_ROOT}/lib/core/hooklib.sh" bash "$script_path" 2>/dev/null); then
         if [[ -n "$output" ]]; then echo "$output"; fi
       else
         _handle_failure "$fail_mode"

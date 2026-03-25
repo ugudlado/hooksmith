@@ -7,10 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT="${OUTPUT:-$SCRIPT_DIR/hooks/hooks.json}"
 
 # ── Shared modules ──
-source "${SCRIPT_DIR}/lib/config.sh"
-source "${SCRIPT_DIR}/lib/parse.sh"
-source "${SCRIPT_DIR}/lib/validate.sh"
-source "${SCRIPT_DIR}/lib/compact.sh"
+source "${SCRIPT_DIR}/lib/core/config.sh"
+source "${SCRIPT_DIR}/lib/core/parse.sh"
+source "${SCRIPT_DIR}/lib/build/validate.sh"
+source "${SCRIPT_DIR}/lib/build/compact.sh"
 
 USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
 PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"

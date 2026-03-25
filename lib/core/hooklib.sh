@@ -14,11 +14,6 @@ ask() {
   exit 0
 }
 
-warn() {
-  jq -n --arg m "${1:-Warning from hook rule}" '{systemMessage:$m}'
-  exit 0
-}
-
 context() {
   jq -n --arg c "$1" '{hookSpecificOutput:{permissionDecision:"allow",additionalContext:$c}}'
   exit 0

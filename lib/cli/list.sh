@@ -4,8 +4,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "${SCRIPT_DIR}/config.sh"
-source "${SCRIPT_DIR}/parse.sh"
+source "${SCRIPT_DIR}/../core/config.sh"
+source "${SCRIPT_DIR}/../core/parse.sh"
 
 USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
 PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"

@@ -287,8 +287,8 @@ test_engine_regex_fields() {
   engine_rule test-bash-nomatch PreToolUse regex  "matcher: Bash"  "field: command"    "pattern: 'danger'"  "result: deny"
   engine_rule test-filepath     PreToolUse regex  "matcher: Write" "field: file_path"  "pattern: '\.ts$'"   "result: deny"
   engine_rule test-filepath-env PreToolUse regex  "matcher: Write" "field: file_path"  "pattern: '\.env$'"  "result: deny"
-  engine_rule test-content      PreToolUse regex  "matcher: Write" "field: content"    "pattern: 'export'"  "result: warn"
-  engine_rule test-userprompt   UserPromptSubmit regex             "field: user_prompt" "pattern: 'feature'" "result: warn"
+  engine_rule test-content      PreToolUse regex  "matcher: Write" "field: content"    "pattern: 'export'"  "result: context"
+  engine_rule test-userprompt   UserPromptSubmit regex             "field: user_prompt" "pattern: 'feature'" "result: context"
 
   out=$(engine_run test-bash-match   "$FIXTURES/bash-safe.json")
   assert_denied   "command field: 'ls' matches bash-safe.json"          "$out"
@@ -303,10 +303,10 @@ test_engine_regex_fields() {
   assert_allowed  "file_path field: .env does not match .ts path"       "$out"
 
   out=$(engine_run test-content      "$FIXTURES/write-safe.json")
-  assert_contains "content field: 'export' triggers systemMessage"      "$out" "systemMessage"
+  assert_contains "content field: 'export' triggers context"             "$out" "additionalContext"
 
   out=$(engine_run test-userprompt   "$FIXTURES/userprompt-in-worktree.json")
-  assert_contains "user_prompt field: 'feature' triggers systemMessage" "$out" "systemMessage"
+  assert_contains "user_prompt field: 'feature' triggers context"        "$out" "additionalContext"
 
   engine_teardown
 }
@@ -320,7 +320,7 @@ test_engine_regex_actions() {
   # All rules match 'ls' from bash-safe.json, differ only in action
   engine_rule test-deny    PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: deny"
   engine_rule test-ask     PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: ask"
-  engine_rule test-warn    PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: warn"
+  engine_rule test-warn    PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: context"
   engine_rule test-context PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: context"
   engine_rule test-nomatch PreToolUse regex "matcher: Bash" "field: command" "pattern: 'nomatch'" "result: deny"
 
@@ -331,7 +331,7 @@ test_engine_regex_actions() {
   assert_asks     "ask:     permissionDecision=ask"     "$out"
 
   out=$(engine_run test-warn    "$FIXTURES/bash-safe.json")
-  assert_contains "warn:    systemMessage present"      "$out" "systemMessage"
+  assert_contains "context: additionalContext present"  "$out" "additionalContext"
 
   out=$(engine_run test-context "$FIXTURES/bash-safe.json")
   assert_context  "context: additionalContext present"  "$out"
@@ -460,7 +460,7 @@ test_compact_basic() {
 
   local yaml='rules:
   - on: PreToolUse Bash
-    if: command =~ git\s+push
+    match: command =~ git\s+push
     deny: No pushing allowed'
 
   local out
@@ -472,7 +472,7 @@ test_compact_basic() {
   content=$(cat "$hf" 2>/dev/null)
   assert_contains "compact build: hooks key present" "$content" '"hooks"'
   assert_contains "compact build: PreToolUse present" "$content" '"PreToolUse"'
-  assert_contains "compact build: regex-match.sh baked" "$content" "regex-match.sh"
+  assert_contains "compact build: match.sh baked" "$content" "match.sh"
 
   # Run against git push fixture — should deny
   local result
@@ -492,16 +492,16 @@ test_compact_actions() {
 
   local yaml='rules:
   - on: PreToolUse Bash
-    if: command =~ danger
+    match: command =~ danger
     deny: Blocked
 
   - on: PreToolUse Bash
-    if: command =~ askme
+    match: command =~ askme
     ask: Please confirm
 
   - on: PreToolUse Bash
-    if: command =~ careful
-    warn: Be careful'
+    match: command =~ careful
+    context: Be careful'
 
   compact_build "$yaml" >/dev/null 2>&1
   local hf="$COMPACT_DIR/hooks.json"
@@ -524,7 +524,7 @@ test_compact_prompt() {
   local yaml='rules:
   - on: PreToolUse Write
     prompt: Check if this file write is safe
-    warn: AI safety check'
+    context: AI safety check'
 
   compact_build "$yaml" >/dev/null 2>&1
   local hf="$COMPACT_DIR/hooks.json"
@@ -550,12 +550,12 @@ test_compact_disabled() {
 
   local yaml='rules:
   - on: PreToolUse Bash
-    if: command =~ danger
+    match: command =~ danger
     deny: Blocked
     enabled: false
 
   - on: PreToolUse Bash
-    if: command =~ other
+    match: command =~ other
     deny: Also blocked'
 
   compact_build "$yaml" >/dev/null 2>&1
@@ -579,7 +579,7 @@ test_compact_validation() {
   # Missing action
   local yaml='rules:
   - on: PreToolUse Bash
-    if: command =~ danger'
+    match: command =~ danger'
   local out
   out=$(compact_build "$yaml" 2>&1)
   assert_contains "compact: missing action error" "$out" "ERROR"
@@ -587,7 +587,7 @@ test_compact_validation() {
   # Bad event
   yaml='rules:
   - on: FakeEvent Bash
-    if: command =~ danger
+    match: command =~ danger
     deny: Blocked'
   out=$(compact_build "$yaml" 2>&1)
   assert_contains "compact: bad event error" "$out" "ERROR"
@@ -595,7 +595,7 @@ test_compact_validation() {
   # ask on wrong event
   yaml='rules:
   - on: SessionStart
-    if: command =~ danger
+    match: command =~ danger
     ask: Should not work'
   out=$(compact_build "$yaml" 2>&1)
   assert_contains "compact: ask on SessionStart error" "$out" "ERROR"
@@ -667,7 +667,7 @@ test_compact_run_dynamic_reason() {
     run: |
       cmd=$(get_field command)
       echo "Command was: $cmd"
-    warn: true'
+    context: true'
 
   compact_build "$yaml" >/dev/null 2>&1
   local hf="$COMPACT_DIR/hooks.json"

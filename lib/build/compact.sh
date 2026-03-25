@@ -4,9 +4,9 @@
 # Three mechanisms, one contract: every hook outputs a reason.
 #
 #   rules:
-#     # "if" — regex match, static reason in the action value
+#     # "match" — regex pattern, static reason
 #     - on: PreToolUse Bash
-#       if: command =~ 'rm\s+-rf'
+#       match: command =~ 'rm\s+-rf'
 #       deny: Destructive command blocked
 #
 #     # "run" — shell code (inline or file path), dynamic reason from stdout
@@ -24,8 +24,9 @@
 #     # "prompt" — LLM evaluates
 #     - on: PreToolUse Write
 #       prompt: Check if this write is safe
-#       warn: AI flagged concern
+#       context: AI flagged concern
 #
+# Actions: deny, ask, context
 # The "run" contract:
 #   - Script gets $INPUT (hook JSON) and get_field helper via hooklib
 #   - Script outputs a reason string to stdout
@@ -91,9 +92,9 @@ _compile_one_rule() {
     echo "ERROR [$prefix]: unknown event '$event'" >&2; return 1
   fi
 
-  # ── Detect action (deny/ask/warn/context) ──
+  # ── Detect action (deny/ask/context) ──
   local action="" message=""
-  for a in deny ask warn context; do
+  for a in deny ask context; do
     local val
     val=$(echo "$rule" | jq -r "if has(\"$a\") then .$a | tostring else empty end")
     if [[ -n "$val" ]]; then
@@ -101,25 +102,25 @@ _compile_one_rule() {
     fi
   done
   if [[ -z "$action" ]]; then
-    echo "ERROR [$prefix]: missing action (deny/ask/warn/context)" >&2; return 1
+    echo "ERROR [$prefix]: missing action (deny/ask/context)" >&2; return 1
   fi
   if ! valid_result_event "$action" "$event"; then
     echo "ERROR [$prefix]: '$action' not valid for event '$event'" >&2; return 1
   fi
 
-  # ── Detect mechanism (exactly one of: if, run, prompt) ──
-  local if_field run_field prompt_field
-  if_field=$(echo "$rule" | jq -r '.["if"] // empty')
+  # ── Detect mechanism (exactly one of: match, run, prompt) ──
+  local match_field run_field prompt_field
+  match_field=$(echo "$rule" | jq -r '.match // empty')
   run_field=$(echo "$rule" | jq -r '.run // empty')
   prompt_field=$(echo "$rule" | jq -r '.prompt // empty')
 
   local mech_count=0
-  [[ -n "$if_field" ]] && mech_count=$((mech_count + 1))
+  [[ -n "$match_field" ]] && mech_count=$((mech_count + 1))
   [[ -n "$run_field" ]] && mech_count=$((mech_count + 1))
   [[ -n "$prompt_field" ]] && mech_count=$((mech_count + 1))
 
   if [[ $mech_count -ne 1 ]]; then
-    echo "ERROR [$prefix]: exactly one of 'if', 'run', 'prompt' required" >&2; return 1
+    echo "ERROR [$prefix]: exactly one of 'match', 'run', 'prompt' required" >&2; return 1
   fi
 
   # ── Optional fields ──
@@ -132,8 +133,8 @@ _compile_one_rule() {
   # ── Build entry ──
   local entry
 
-  if [[ -n "$if_field" ]]; then
-    entry=$(_build_regex_entry "$prefix" "$if_field" "$message" "$action" "$timeout")
+  if [[ -n "$match_field" ]]; then
+    entry=$(_build_match_entry "$prefix" "$match_field" "$message" "$action" "$timeout")
     [[ $? -ne 0 ]] && return 1
 
   elif [[ -n "$run_field" ]]; then
@@ -160,14 +161,14 @@ _compile_one_rule() {
     '{event:$e,matcher:$m,entry:$entry}'
 }
 
-# ── Build a regex entry (baked — no runtime YAML parse) ──
+# ── Build a match entry (baked regex — no runtime YAML parse) ──
 
-_build_regex_entry() {
-  local prefix="$1" if_field="$2" message="$3" action="$4" timeout="$5"
+_build_match_entry() {
+  local prefix="$1" match_field="$2" message="$3" action="$4" timeout="$5"
 
   # Parse "field =~ 'pattern'"
-  if [[ ! "$if_field" =~ ^([a-z_]+)[[:space:]]*=~[[:space:]]*(.+)$ ]]; then
-    echo "ERROR [$prefix]: 'if' must be 'field =~ pattern' (got: $if_field)" >&2
+  if [[ ! "$match_field" =~ ^([a-z_]+)[[:space:]]*=~[[:space:]]*(.+)$ ]]; then
+    echo "ERROR [$prefix]: 'match' must be 'field =~ pattern' (got: $match_field)" >&2
     return 1
   fi
   local field="${BASH_REMATCH[1]}"
@@ -185,29 +186,22 @@ _build_regex_entry() {
   jq -n \
     --arg f "$field" --arg p "$pattern" --arg m "$message" --arg a "$action" \
     --argjson t "$timeout" \
-    '{type:"command",command:("bash ${CLAUDE_PLUGIN_ROOT}/lib/regex-match.sh " + ($f | @sh) + " " + ($p | @sh) + " " + ($m | @sh) + " " + ($a | @sh)),timeout:$t}'
+    '{type:"command",command:("bash ${CLAUDE_PLUGIN_ROOT}/lib/runtime/match.sh " + ($f | @sh) + " " + ($p | @sh) + " " + ($m | @sh) + " " + ($a | @sh)),timeout:$t}'
 }
 
 # ── Build a run entry (unified: inline script or file path) ──
-#
-# If the run value is a path to an existing .sh file → read it.
-# Otherwise → treat as inline script.
-# Either way, base64-encode and invoke via run-hook.sh.
 
 _build_run_entry() {
   local prefix="$1" run_field="$2" action="$3" timeout="$4"
 
   local script_content
 
-  # Check if it's a file path (starts with / or ~ and ends with .sh, or is a simple path)
   local resolved_path
   resolved_path=$(expand_tilde "$run_field")
   if [[ -f "$resolved_path" ]]; then
-    # External script file — read its content
     script_content=$(cat "$resolved_path")
     debug "run: loaded script from $run_field"
   else
-    # Inline script
     script_content="$run_field"
   fi
 
@@ -218,5 +212,5 @@ _build_run_entry() {
   jq -n \
     --arg a "$action" --arg b "$b64" \
     --argjson t "$timeout" \
-    '{type:"command",command:("HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/run-hook.sh " + ($a | @sh) + " " + ($b | @sh)),timeout:$t}'
+    '{type:"command",command:("HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/core/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/runtime/runner.sh " + ($a | @sh) + " " + ($b | @sh)),timeout:$t}'
 }

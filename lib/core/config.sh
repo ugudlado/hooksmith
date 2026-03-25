@@ -55,7 +55,6 @@ valid_result_event() {
                 "$event" == "Stop" || "$event" == "UserPromptSubmit" || \
                 "$event" == "SubagentStop" ]] ;;
     ask)     [[ "$event" == "PreToolUse" ]] ;;
-    warn)    return 0 ;;
     context) return 0 ;;
     *)       return 1 ;;
   esac
