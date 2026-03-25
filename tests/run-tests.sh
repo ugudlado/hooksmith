@@ -7,38 +7,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURES="${REPO_ROOT}/tests/fixtures"
 HOOKSMITH="${REPO_ROOT}/hooksmith"
 
-# Override rule dirs to user rules for all tests
-export USER_RULES_DIR="${HOME}/.config/hooksmith/rules"
-export PROJECT_RULES_DIR="/dev/null"  # disable project scope in tests
-
 # ── Test state ──
 PASS=0
 FAIL=0
 ERRORS=()
 
 # ── Helpers ──
-
-# Run a hook via hooksmith run, piping a fixture file as stdin
-# Usage: run_hook <id> <fixture_file>
-# Returns: stdout of the hook
-run_hook() {
-  local id="$1" fixture="$2"
-  bash "$HOOKSMITH" run "$id" < "$fixture"
-}
-
-# ── TODO: Implement assertions below ──
-#
-# These are the core of the test framework. Each should:
-#   - Print "  PASS: <label>" or "  FAIL: <label> — <reason>"
-#   - Increment $PASS or $FAIL
-#   - Append to $ERRORS on failure
-#
-# Constraints to consider:
-#   - Hook output is JSON (use jq to extract fields)
-#   - A passing hook may output nothing (exit 0, empty stdout)
-#   - A denying hook outputs JSON with permissionDecision: "deny"
-#   - An asking hook outputs JSON with permissionDecision: "ask"
-#   - assert_denied and assert_allowed are the most-used assertions
 
 _pass() {
   echo "  PASS: $1"
@@ -58,11 +32,8 @@ _decision() {
 assert_denied() {
   local label="$1" output="$2"
   local decision; decision=$(_decision "$output")
-  if [[ "$decision" == "deny" ]]; then
-    _pass "$label"
-  else
-    _fail "$label" "expected deny, got '${decision:-empty}'"
-  fi
+  if [[ "$decision" == "deny" ]]; then _pass "$label"
+  else _fail "$label" "expected deny, got '${decision:-empty}'"; fi
 }
 
 assert_allowed() {
@@ -70,155 +41,33 @@ assert_allowed() {
   local decision; decision=$(_decision "$output")
   if [[ "$decision" == "deny" || "$decision" == "ask" ]]; then
     _fail "$label" "expected allow, got '$decision'"
-  else
-    _pass "$label"
-  fi
+  else _pass "$label"; fi
 }
 
 assert_asks() {
   local label="$1" output="$2"
   local decision; decision=$(_decision "$output")
-  if [[ "$decision" == "ask" ]]; then
-    _pass "$label"
-  else
-    _fail "$label" "expected ask, got '${decision:-empty}'"
-  fi
+  if [[ "$decision" == "ask" ]]; then _pass "$label"
+  else _fail "$label" "expected ask, got '${decision:-empty}'"; fi
 }
 
 assert_contains() {
   local label="$1" output="$2" pattern="$3"
-  if echo "$output" | grep -q "$pattern"; then
-    _pass "$label"
-  else
-    _fail "$label" "expected output to contain '$pattern'"
-  fi
+  if echo "$output" | grep -q "$pattern"; then _pass "$label"
+  else _fail "$label" "expected output to contain '$pattern'"; fi
 }
 
 assert_exit_ok() {
   local label="$1" exit_code="$2"
-  if [[ "$exit_code" -eq 0 ]]; then
-    _pass "$label"
-  else
-    _fail "$label" "expected exit 0, got $exit_code"
-  fi
+  if [[ "$exit_code" -eq 0 ]]; then _pass "$label"
+  else _fail "$label" "expected exit 0, got $exit_code"; fi
 }
 
 assert_context() {
-  local label="$1" output="$2" key="${3:-additionalContext}"
-  local val; val=$(echo "$output" | jq -r ".hookSpecificOutput.${key} // empty" 2>/dev/null)
-  if [[ -n "$val" ]]; then
-    _pass "$label"
-  else
-    _fail "$label" "expected hookSpecificOutput.${key} to be present"
-  fi
-}
-
-# Run a hook in a worktree context by temporarily changing CWD
-run_hook_in_worktree() {
-  local id="$1" fixture="$2" worktree="$3"
-  (cd "$worktree" && bash "$HOOKSMITH" run "$id" < "$fixture")
-}
-
-# ── Test suites ──
-
-test_cli() {
-  echo "CLI"
-
-  local out exit_code
-
-  out=$(bash "$HOOKSMITH" list 2>/dev/null); exit_code=$?
-  assert_exit_ok "list exits 0" "$exit_code"
-  assert_contains "list shows rules" "$out" "HOOKSMITH RULES"
-
-  out=$(bash "$HOOKSMITH" list --json 2>/dev/null); exit_code=$?
-  assert_exit_ok "list --json exits 0" "$exit_code"
-  assert_contains "list --json is valid json" "$(echo "$out" | jq -e . 2>/dev/null && echo valid)" "valid"
-
-  out=$(bash "$HOOKSMITH" run nonexistent-id < /dev/null 2>/dev/null); exit_code=$?
-  assert_exit_ok "run unknown id exits 0 (fail-open)" "$exit_code"
-
-  out=$(bash "$HOOKSMITH" 2>&1 || true)
-  assert_contains "no args shows usage" "$out" "Commands:"
-}
-
-test_bash_safety_guard() {
-  echo "bash-safety-guard"
-  local out
-
-  out=$(run_hook bash-safety-guard "$FIXTURES/bash-git-push.json" 2>/dev/null)
-  assert_denied "git push is denied" "$out"
-
-  out=$(run_hook bash-safety-guard "$FIXTURES/bash-safe.json" 2>/dev/null)
-  assert_allowed "ls -la is allowed" "$out"
-}
-
-test_protected_files() {
-  echo "protected-files"
-  local out
-
-  out=$(run_hook protected-files "$FIXTURES/write-lockfile.json" 2>/dev/null)
-  assert_asks "pnpm-lock.yaml triggers ask" "$out"
-
-  out=$(run_hook protected-files "$FIXTURES/write-plugin-json.json" 2>/dev/null)
-  assert_asks "plugin.json triggers ask" "$out"
-
-  out=$(run_hook protected-files "$FIXTURES/write-safe.json" 2>/dev/null)
-  assert_allowed "normal file is allowed" "$out"
-}
-
-test_deny_behaviors() {
-  echo "deny behaviors"
-  local out
-
-  # bash-safety-guard — various deny patterns
-  out=$(run_hook bash-safety-guard "$FIXTURES/bash-git-push.json" 2>/dev/null)
-  assert_denied "git push denied" "$out"
-
-  # process-kill-guard — killing unregistered PID
-  out=$(run_hook process-kill-guard "$FIXTURES/bash-kill-unregistered.json" 2>/dev/null)
-  assert_denied "kill unregistered PID denied" "$out"
-
-  # worktree-boundary — write outside active worktree
-  local fake_wt; fake_wt=$(mktemp -d "${TMPDIR:-/tmp}/feature_worktrees/MY-FEAT.XXXX" 2>/dev/null || mktemp -d)
-  mkdir -p "$fake_wt"
-  out=$(cd "$fake_wt" && bash "$HOOKSMITH" run worktree-boundary < "$FIXTURES/write-outside-worktree.json" 2>/dev/null)
-  assert_denied "write outside worktree denied" "$out"
-  rm -rf "$fake_wt"
-}
-
-test_ask_behaviors() {
-  echo "ask behaviors"
-  local out
-
-  out=$(run_hook protected-files "$FIXTURES/write-lockfile.json" 2>/dev/null)
-  assert_asks "pnpm-lock.yaml asks" "$out"
-
-  out=$(run_hook protected-files "$FIXTURES/write-plugin-json.json" 2>/dev/null)
-  assert_asks "plugin.json asks" "$out"
-}
-
-test_allow_behaviors() {
-  echo "allow behaviors"
-  local out
-
-  # Safe bash — no deny, no ask
-  out=$(run_hook bash-safety-guard "$FIXTURES/bash-safe.json" 2>/dev/null)
-  assert_allowed "safe bash command allowed" "$out"
-
-  # Normal file write — no deny, no ask
-  out=$(run_hook protected-files "$FIXTURES/write-safe.json" 2>/dev/null)
-  assert_allowed "safe file write allowed" "$out"
-
-  # worktree-boundary — write inside worktree is allowed
-  local fake_wt; fake_wt=$(mktemp -d)
-  mkdir -p "$fake_wt"
-  out=$(cd "$fake_wt" && bash "$HOOKSMITH" run worktree-boundary < "$FIXTURES/write-safe.json" 2>/dev/null)
-  assert_allowed "write outside worktree context (no worktree) allowed" "$out"
-  rm -rf "$fake_wt"
-
-  # task-gate — context hook emits additionalContext, not a denial
-  out=$(run_hook task-gate "$FIXTURES/userprompt-in-worktree.json" 2>/dev/null)
-  assert_allowed "task-gate allows (not on feature branch)" "$out"
+  local label="$1" output="$2"
+  local val; val=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+  if [[ -n "$val" ]]; then _pass "$label"
+  else _fail "$label" "expected additionalContext to be present"; fi
 }
 
 # ── Summary ──
@@ -240,150 +89,435 @@ print_summary() {
   fi
 }
 
-# ── Engine tests (isolated temp rule dirs) ──
+# ── Eval test infrastructure ──
 
-engine_setup() {
-  ENGINE_DIR=$(mktemp -d)
-  _PRIOR_TRAP=$(trap -p EXIT)
-  trap 'rm -rf "$ENGINE_DIR"' EXIT
+eval_setup() {
+  EVAL_DIR=$(mktemp -d)
+  mkdir -p "$EVAL_DIR/.hooksmith"
+  trap 'rm -rf "$EVAL_DIR"' EXIT
 }
 
-engine_teardown() {
-  rm -rf "$ENGINE_DIR"
-  eval "${_PRIOR_TRAP:-trap - EXIT}"
+eval_teardown() {
+  rm -rf "$EVAL_DIR"
+  trap - EXIT
 }
 
-engine_rule() {
-  local id="$1" event="$2" mechanism="$3"; shift 3
-  printf 'id: %s\nevent: %s\nmechanism: %s\n' "$id" "$event" "$mechanism" > "$ENGINE_DIR/${id}.yaml"
-  local kv
-  for kv in "$@"; do
-    printf '%s\n' "$kv" >> "$ENGINE_DIR/${id}.yaml"
-  done
+eval_run() {
+  local fixture="$1" event="$2" tool="${3:-}"
+  local context
+  context=$(cat "$fixture")
+  context=$(echo "$context" | jq --arg e "$event" '. + {hook_event_name:$e}')
+  if [[ -n "$tool" ]]; then
+    context=$(echo "$context" | jq --arg t "$tool" '. + {tool_name:$t}')
+  fi
+  echo "$context" | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null)
 }
 
-engine_run() {
-  USER_RULES_DIR="$ENGINE_DIR" PROJECT_RULES_DIR="/dev/null" \
-    bash "$HOOKSMITH" run "$1" < "$2" 2>/dev/null
+# ── CLI tests ──
+
+test_cli() {
+  echo "CLI"
+
+  local out exit_code
+
+  out=$(bash "$HOOKSMITH" 2>&1 || true)
+  assert_contains "no args shows usage" "$out" "Commands:"
+
+  out=$(bash "$HOOKSMITH" init --help 2>/dev/null); exit_code=$?
+  assert_exit_ok "init --help exits 0" "$exit_code"
+  assert_contains "init --help shows usage" "$out" "hooksmith init"
 }
 
-# Returns two sections separated by a marker: stderr errors then hooks.json content
-engine_build() {
-  local output_file="$ENGINE_DIR/hooks.json"
-  local errors
-  errors=$(USER_RULES_DIR="$ENGINE_DIR" PROJECT_RULES_DIR="/dev/null" \
-    OUTPUT="$output_file" bash "${REPO_ROOT}/build.sh" 2>&1 >/dev/null)
-  echo "$errors"
-  [[ -f "$output_file" ]] && cat "$output_file"
+# ── Match (regex) tests ──
+
+test_eval_match() {
+  echo "match rules"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: block-push
+    on: PreToolUse Bash
+    match: command =~ git\s+push
+    deny: No pushing allowed
+YAML
+
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "git push denied" "$result"
+  assert_contains "reason in output" "$result" "No pushing allowed"
+
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "safe command allowed" "$result"
+
+  eval_teardown
 }
 
-test_engine_regex_fields() {
-  echo "engine: regex field routing"
-  local out
+test_eval_match_actions() {
+  echo "match actions (deny/ask/context)"
+  eval_setup
 
-  engine_setup
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: deny-test
+    on: PreToolUse Bash
+    match: command =~ ls
+    deny: Denied
+YAML
 
-  engine_rule test-bash-match   PreToolUse regex  "matcher: Bash"  "field: command"    "pattern: 'ls'"      "result: deny"
-  engine_rule test-bash-nomatch PreToolUse regex  "matcher: Bash"  "field: command"    "pattern: 'danger'"  "result: deny"
-  engine_rule test-filepath     PreToolUse regex  "matcher: Write" "field: file_path"  "pattern: '\.ts$'"   "result: deny"
-  engine_rule test-filepath-env PreToolUse regex  "matcher: Write" "field: file_path"  "pattern: '\.env$'"  "result: deny"
-  engine_rule test-content      PreToolUse regex  "matcher: Write" "field: content"    "pattern: 'export'"  "result: warn"
-  engine_rule test-userprompt   UserPromptSubmit regex             "field: user_prompt" "pattern: 'feature'" "result: warn"
+  local result
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_denied "deny action works" "$result"
+  eval_teardown
 
-  out=$(engine_run test-bash-match   "$FIXTURES/bash-safe.json")
-  assert_denied   "command field: 'ls' matches bash-safe.json"          "$out"
+  eval_setup
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: ask-test
+    on: PreToolUse Bash
+    match: command =~ ls
+    ask: Please confirm
+YAML
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_asks "ask action works" "$result"
+  eval_teardown
 
-  out=$(engine_run test-bash-nomatch "$FIXTURES/bash-safe.json")
-  assert_allowed  "command field: 'danger' does not match ls command"   "$out"
-
-  out=$(engine_run test-filepath     "$FIXTURES/write-safe.json")
-  assert_denied   "file_path field: .ts extension matches write-safe"   "$out"
-
-  out=$(engine_run test-filepath-env "$FIXTURES/write-safe.json")
-  assert_allowed  "file_path field: .env does not match .ts path"       "$out"
-
-  out=$(engine_run test-content      "$FIXTURES/write-safe.json")
-  assert_contains "content field: 'export' triggers systemMessage"      "$out" "systemMessage"
-
-  out=$(engine_run test-userprompt   "$FIXTURES/userprompt-in-worktree.json")
-  assert_contains "user_prompt field: 'feature' triggers systemMessage" "$out" "systemMessage"
-
-  engine_teardown
+  eval_setup
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: context-test
+    on: PreToolUse Bash
+    match: command =~ ls
+    context: Additional info
+YAML
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_context "context action works" "$result"
+  eval_teardown
 }
 
-test_engine_regex_actions() {
-  echo "engine: regex action types"
-  local out
+test_eval_match_fields() {
+  echo "match field routing"
+  eval_setup
 
-  engine_setup
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: file-path-check
+    on: PreToolUse Write
+    match: file_path =~ \.ts$
+    deny: TypeScript file
 
-  # All rules match 'ls' from bash-safe.json, differ only in action
-  engine_rule test-deny    PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: deny"
-  engine_rule test-ask     PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: ask"
-  engine_rule test-warn    PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: warn"
-  engine_rule test-context PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: context"
-  engine_rule test-nomatch PreToolUse regex "matcher: Bash" "field: command" "pattern: 'nomatch'" "result: deny"
+  - name: content-check
+    on: PreToolUse Write
+    match: content =~ export
+    context: Has exports
+YAML
 
-  out=$(engine_run test-deny    "$FIXTURES/bash-safe.json")
-  assert_denied   "deny:    permissionDecision=deny"    "$out"
+  local result
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"src/app.ts","content":"export default"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "file_path field match works" "$result"
 
-  out=$(engine_run test-ask     "$FIXTURES/bash-safe.json")
-  assert_asks     "ask:     permissionDecision=ask"     "$out"
-
-  out=$(engine_run test-warn    "$FIXTURES/bash-safe.json")
-  assert_contains "warn:    systemMessage present"      "$out" "systemMessage"
-
-  out=$(engine_run test-context "$FIXTURES/bash-safe.json")
-  assert_context  "context: additionalContext present"  "$out"
-
-  out=$(engine_run test-nomatch "$FIXTURES/bash-safe.json")
-  assert_allowed  "no match: empty output (pass-through)" "$out"
-
-  engine_teardown
+  eval_teardown
 }
 
-test_engine_build() {
-  echo "engine: build"
-  local out
+# ── Run (script) tests ──
 
-  engine_setup
-  engine_rule build-test-rule PreToolUse regex "matcher: Bash" "field: command" "pattern: 'danger'" "result: deny"
-  out=$(engine_build)
-  assert_contains "valid rule: hooks key present"        "$out" '"hooks"'
-  assert_contains "valid rule: PreToolUse event present" "$out" '"PreToolUse"'
-  assert_contains "valid rule: runner command embedded"  "$out" "hooksmith run build-test-rule"
-  engine_teardown
+test_eval_run_inline() {
+  echo "run inline scripts"
+  eval_setup
 
-  engine_setup
-  engine_rule bad-rule PreToolUse regex "matcher: Bash" "field: command" "pattern: 'x'"
-  out=$(engine_build)
-  assert_contains "missing result: build errors"         "$out" "ERROR"
-  engine_teardown
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: sudo-guard
+    on: PreToolUse Bash
+    run: |
+      cmd=$(get_field command)
+      [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
+    deny: true
+YAML
 
-  engine_setup
-  engine_rule bad-event-rule FakeEvent regex "field: command" "pattern: 'x'" "result: deny"
-  out=$(engine_build)
-  assert_contains "unknown event: build errors"          "$out" "ERROR"
-  engine_teardown
+  local result
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "sudo denied" "$result"
+  assert_contains "dynamic reason" "$result" "Root access not allowed"
+
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "safe command allowed" "$result"
+
+  eval_teardown
 }
 
-test_engine_disabled() {
-  echo "engine: disabled rules"
-  local out stderr_out
+test_eval_run_file() {
+  echo "run external files"
+  eval_setup
 
-  engine_setup
+  cat > "$EVAL_DIR/guard.sh" << 'SCRIPT'
+source "$HOOKLIB"
+read_input
+cmd=$(get_field command)
+[[ "$cmd" =~ git.+push ]] && echo "Push blocked by guard"
+SCRIPT
 
-  engine_rule test-disabled PreToolUse regex "matcher: Bash" "field: command" "pattern: 'ls'" "result: deny" "enabled: false"
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << YAML
+rules:
+  - name: external-guard
+    on: PreToolUse Bash
+    run: $EVAL_DIR/guard.sh
+    deny: true
+YAML
 
-  # Capture stderr separately to confirm rule was found but skipped (not missing)
-  stderr_out=$(USER_RULES_DIR="$ENGINE_DIR" PROJECT_RULES_DIR="/dev/null" \
-    bash "$HOOKSMITH" run test-disabled < "$FIXTURES/bash-safe.json" 2>&1 >/dev/null)
-  assert_contains "disabled rule: rule found and skipped" "$stderr_out" "disabled"
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "external file deny works" "$result"
+  assert_contains "external file reason" "$result" "Push blocked by guard"
 
-  out=$(engine_run test-disabled "$FIXTURES/bash-safe.json")
-  assert_allowed  "disabled rule: no deny/ask emitted" "$out"
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "external file pass-through works" "$result"
 
-  engine_teardown
+  eval_teardown
+}
+
+# ── Matcher routing tests ──
+
+test_eval_routing() {
+  echo "matcher routing"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: bash-only
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Bash blocked
+
+  - name: write-only
+    on: PreToolUse Write
+    match: file_path =~ \.env$
+    ask: Sensitive file
+YAML
+
+  local result
+  # Write tool should not trigger Bash rule
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"src/app.ts"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_allowed "Write tool doesn't trigger Bash rule" "$result"
+
+  # .env should trigger Write rule
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":".env"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_asks ".env triggers Write ask" "$result"
+
+  # Bash|Write pipe matcher
+  eval_teardown
+  eval_setup
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: multi-tool
+    on: PreToolUse Bash|Write
+    match: command =~ ls
+    deny: Blocked
+YAML
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_denied "pipe matcher matches Bash" "$result"
+
+  eval_teardown
+}
+
+# ── Disabled rules ──
+
+test_eval_disabled() {
+  echo "disabled rules"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: disabled-rule
+    on: PreToolUse Bash
+    match: command =~ ls
+    deny: Should not fire
+    enabled: false
+YAML
+
+  local result
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "disabled rule doesn't fire" "$result"
+
+  eval_teardown
+}
+
+# ── Debug output ──
+
+test_eval_debug() {
+  echo "debug output"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: my-custom-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Blocked
+YAML
+
+  local stderr_out
+  stderr_out=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"danger zone"}}' | \
+    (cd "$EVAL_DIR" && HOOKSMITH_DEBUG=1 bash "$HOOKSMITH" eval 2>&1 >/dev/null))
+  assert_contains "rule name in debug" "$stderr_out" "my-custom-guard"
+  assert_contains "event in debug" "$stderr_out" "PreToolUse"
+
+  eval_teardown
+}
+
+# ── Multi-file / folder rules ──
+
+test_eval_multi_file() {
+  echo "multi-file rules"
+  eval_setup
+
+  # Single-file rules
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: base-rule
+    on: PreToolUse Bash
+    match: command =~ rm\s+-rf
+    deny: Base rule blocked rm
+YAML
+
+  # Rule folder with grouped files
+  mkdir -p "$EVAL_DIR/.hooksmith/rules/security"
+  cat > "$EVAL_DIR/.hooksmith/rules/security/sudo.yaml" << 'YAML'
+rules:
+  - name: sudo-block
+    on: PreToolUse Bash
+    run: |
+      cmd=$(get_field command)
+      [[ "$cmd" =~ ^sudo ]] && echo "Sudo blocked by security rules"
+    deny: true
+YAML
+
+  mkdir -p "$EVAL_DIR/.hooksmith/rules/files"
+  cat > "$EVAL_DIR/.hooksmith/rules/files/env-guard.yaml" << 'YAML'
+rules:
+  - name: env-file-guard
+    on: PreToolUse Write
+    match: file_path =~ \.env$
+    ask: Env file modification
+YAML
+
+  # Test base rule (hooksmith.yaml)
+  local result
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "multi-file: base hooksmith.yaml rule works" "$result"
+
+  # Test subfolder rule (security/sudo.yaml)
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo whoami"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "multi-file: security/sudo.yaml rule works" "$result"
+  assert_contains "multi-file: reason from subfolder rule" "$result" "Sudo blocked by security rules"
+
+  # Test subfolder rule (files/env-guard.yaml)
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"config/.env"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_asks "multi-file: files/env-guard.yaml rule works" "$result"
+
+  # Non-matching command should pass through all rules
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "multi-file: safe command passes all rules" "$result"
+
+  eval_teardown
+}
+
+test_eval_flat_rules_folder() {
+  echo "flat rules folder"
+  eval_setup
+
+  mkdir -p "$EVAL_DIR/.hooksmith/rules"
+  cat > "$EVAL_DIR/.hooksmith/rules/block-push.yaml" << 'YAML'
+rules:
+  - name: block-push
+    on: PreToolUse Bash
+    match: command =~ git\s+push
+    deny: Push blocked
+YAML
+
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "flat folder: rule from rules/*.yaml works" "$result"
+
+  eval_teardown
+}
+
+# ── Map auto-rebuild tests ──
+
+test_eval_map_auto_rebuild() {
+  echo "map auto-rebuild"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: original-rule
+    on: PreToolUse Bash
+    match: command =~ git\s+push
+    deny: Push blocked
+YAML
+
+  # First eval builds the map
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "map: first eval builds map and denies" "$result"
+
+  # Map file should exist
+  if [[ -f "$EVAL_DIR/.hooksmith/.map.json" ]]; then
+    _pass "map: .map.json created"
+  else
+    _fail "map: .map.json created" "file not found"
+  fi
+
+  # Second eval uses cached map (rule still works)
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "map: cached map still denies" "$result"
+
+  # Update rules — add a new rule, touch file to ensure newer timestamp
+  sleep 1
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: updated-rule
+    on: PreToolUse Bash
+    match: command =~ ls
+    deny: ls is now blocked
+YAML
+
+  # Eval should detect stale map, rebuild, and use new rule
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_denied "map: auto-rebuild picks up new rule" "$result"
+  assert_contains "map: new reason after rebuild" "$result" "ls is now blocked"
+
+  # Old rule should no longer match
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_allowed "map: old rule gone after rebuild" "$result"
+
+  eval_teardown
+}
+
+# ── Init command ──
+
+test_init() {
+  echo "init command"
+  eval_setup
+
+  local out hf="$EVAL_DIR/hooks.json"
+  out=$(OUTPUT="$hf" bash "$HOOKSMITH" init 2>&1)
+  assert_contains "init generates output" "$out" "Generated"
+
+  local content
+  content=$(cat "$hf")
+  assert_contains "init: hooks key" "$content" '"hooks"'
+  assert_contains "init: PreToolUse registered" "$content" '"PreToolUse"'
+  assert_contains "init: hooksmith eval command" "$content" "hooksmith eval"
+
+  eval_teardown
 }
 
 # ── Run ──
@@ -393,20 +527,40 @@ echo "════════════════════════�
 echo ""
 test_cli
 echo ""
-test_deny_behaviors
+test_init
 echo ""
-test_ask_behaviors
+echo "match"
+echo "─────"
+test_eval_match
 echo ""
-test_allow_behaviors
+test_eval_match_actions
 echo ""
-echo "engine"
-echo "──────"
-test_engine_regex_fields
+test_eval_match_fields
 echo ""
-test_engine_regex_actions
+echo "run"
+echo "───"
+test_eval_run_inline
 echo ""
-test_engine_build
+test_eval_run_file
 echo ""
-test_engine_disabled
+echo "routing"
+echo "───────"
+test_eval_routing
+echo ""
+test_eval_disabled
+echo ""
+echo "multi-file"
+echo "──────────"
+test_eval_multi_file
+echo ""
+test_eval_flat_rules_folder
+echo ""
+echo "map"
+echo "───"
+test_eval_map_auto_rebuild
+echo ""
+echo "debug"
+echo "─────"
+test_eval_debug
 echo ""
 print_summary

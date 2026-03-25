@@ -14,13 +14,8 @@ ask() {
   exit 0
 }
 
-warn() {
-  jq -n --arg m "${1:-Warning from hook rule}" '{systemMessage:$m}'
-  exit 0
-}
-
 context() {
-  jq -n --arg c "$1" '{hookSpecificOutput:{additionalContext:$c}}'
+  jq -n --arg c "$1" '{hookSpecificOutput:{permissionDecision:"allow",additionalContext:$c}}'
   exit 0
 }
 
@@ -29,7 +24,7 @@ block_stop() {
   exit 0
 }
 
-read_input() { INPUT=$(cat); export INPUT; }
+read_input() { [[ -n "${INPUT:-}" ]] && return; INPUT=$(cat); export INPUT; }
 
 get_field() {
   local field="$1" json="${INPUT:-$(cat)}"

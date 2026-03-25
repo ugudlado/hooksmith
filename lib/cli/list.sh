@@ -4,10 +4,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "${SCRIPT_DIR}/parse.sh"
+source "${SCRIPT_DIR}/../core/config.sh"
+source "${SCRIPT_DIR}/../core/parse.sh"
 
-USER_RULES_DIR="${USER_RULES_DIR:-$HOME/.config/hooksmith/rules}"
-PROJECT_RULES_DIR="${PROJECT_RULES_DIR:-.hooksmith/rules}"
+USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
+PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"
 
 # ── Argument parsing ──
 
@@ -73,8 +74,8 @@ main() {
     fail_mode=$(get_val "$parsed" "fail_mode")
     enabled=$(get_val "$parsed" "enabled")
 
-    [[ -z "$fail_mode" ]] && fail_mode="open"
-    [[ -z "$enabled" ]] && enabled="true"
+    [[ -z "$fail_mode" ]] && fail_mode="$HOOKSMITH_DEFAULT_FAIL_MODE"
+    [[ -z "$enabled" ]] && enabled="$HOOKSMITH_DEFAULT_ENABLED"
 
     local display_file="$file"
     display_file="${display_file/#$HOME/~}"
