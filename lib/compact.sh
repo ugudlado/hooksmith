@@ -13,6 +13,12 @@
 #       ask: Modifying sensitive file
 #
 #     - on: PreToolUse Bash
+#       check: |
+#         cmd=$(get_field command)
+#         [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
+#       deny: true
+#
+#     - on: PreToolUse Bash
 #       script: ~/scripts/guard.sh
 #       deny: Custom guard
 #
@@ -95,19 +101,21 @@ _compile_one_rule() {
     echo "ERROR [$prefix]: '$action' not valid for event '$event'" >&2; return 1
   fi
 
-  # ── Detect mechanism (exactly one of: if, script, prompt) ──
-  local if_field script_field prompt_field
+  # ── Detect mechanism (exactly one of: if, check, script, prompt) ──
+  local if_field check_field script_field prompt_field
   if_field=$(echo "$rule" | jq -r '.["if"] // empty')
+  check_field=$(echo "$rule" | jq -r '.check // empty')
   script_field=$(echo "$rule" | jq -r '.script // empty')
   prompt_field=$(echo "$rule" | jq -r '.prompt // empty')
 
   local mech_count=0
   [[ -n "$if_field" ]] && mech_count=$((mech_count + 1))
+  [[ -n "$check_field" ]] && mech_count=$((mech_count + 1))
   [[ -n "$script_field" ]] && mech_count=$((mech_count + 1))
   [[ -n "$prompt_field" ]] && mech_count=$((mech_count + 1))
 
   if [[ $mech_count -ne 1 ]]; then
-    echo "ERROR [$prefix]: exactly one of 'if', 'script', 'prompt' required" >&2; return 1
+    echo "ERROR [$prefix]: exactly one of 'if', 'check', 'script', 'prompt' required" >&2; return 1
   fi
 
   # ── Optional fields ──
@@ -122,6 +130,10 @@ _compile_one_rule() {
 
   if [[ -n "$if_field" ]]; then
     entry=$(_build_regex_entry "$prefix" "$if_field" "$message" "$action" "$timeout")
+    [[ $? -ne 0 ]] && return 1
+
+  elif [[ -n "$check_field" ]]; then
+    entry=$(_build_check_entry "$prefix" "$check_field" "$action" "$timeout")
     [[ $? -ne 0 ]] && return 1
 
   elif [[ -n "$script_field" ]]; then
@@ -175,6 +187,21 @@ _build_regex_entry() {
     --arg f "$field" --arg p "$pattern" --arg m "$message" --arg a "$action" \
     --argjson t "$timeout" \
     '{type:"command",command:("bash ${CLAUDE_PLUGIN_ROOT}/lib/regex-match.sh " + ($f | @sh) + " " + ($p | @sh) + " " + ($m | @sh) + " " + ($a | @sh)),timeout:$t}'
+}
+
+# ── Build a check entry (inline shell logic, baked as base64) ──
+
+_build_check_entry() {
+  local prefix="$1" check_script="$2" action="$3" timeout="$4"
+
+  # Base64-encode the check script so it survives JSON + shell quoting
+  local check_b64
+  check_b64=$(printf '%s' "$check_script" | base64 -w0 2>/dev/null || printf '%s' "$check_script" | base64)
+
+  jq -n \
+    --arg a "$action" --arg b "$check_b64" \
+    --argjson t "$timeout" \
+    '{type:"command",command:("HOOKLIB=${CLAUDE_PLUGIN_ROOT}/lib/hooklib.sh bash ${CLAUDE_PLUGIN_ROOT}/lib/check-runner.sh " + ($a | @sh) + " " + ($b | @sh)),timeout:$t}'
 }
 
 # ── Build a script entry ──

@@ -603,6 +603,86 @@ test_compact_validation() {
   compact_teardown
 }
 
+test_compact_check_deny() {
+  echo "compact: check mechanism (deny)"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Bash
+    check: |
+      cmd=$(get_field command)
+      if [[ "$cmd" =~ ^sudo ]]; then
+        echo "Root access not allowed"
+      elif [[ "$cmd" =~ git.+push ]]; then
+        echo "Direct push not permitted"
+      fi
+    deny: true'
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  # Should deny sudo
+  local result
+  result=$(compact_run "$hf" "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "check: git push denied" "$result"
+  assert_contains "check: reason in output" "$result" "Direct push not permitted"
+
+  # Should allow safe command
+  result=$(compact_run "$hf" "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "check: safe command allowed" "$result"
+
+  compact_teardown
+}
+
+test_compact_check_ask() {
+  echo "compact: check mechanism (ask)"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Write
+    check: |
+      path=$(get_field file_path)
+      if [[ "$path" =~ \.(lock|lockb)$ ]] || [[ "$path" =~ lock\.yaml$ ]]; then
+        echo "Lock file modification: $path"
+      fi
+    ask: true'
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  # Lock file should trigger ask
+  result=$(compact_run "$hf" "$FIXTURES/write-lockfile.json" "PreToolUse" "Write")
+  assert_asks "check-ask: lock file triggers ask" "$result"
+
+  # Normal file should pass
+  result=$(compact_run "$hf" "$FIXTURES/write-safe.json" "PreToolUse" "Write")
+  assert_allowed "check-ask: normal file allowed" "$result"
+
+  compact_teardown
+}
+
+test_compact_check_reason() {
+  echo "compact: check provides dynamic reason"
+  compact_setup
+
+  local yaml='rules:
+  - on: PreToolUse Bash
+    check: |
+      cmd=$(get_field command)
+      echo "Command was: $cmd"
+    warn: true'
+
+  compact_build "$yaml" >/dev/null 2>&1
+  local hf="$COMPACT_DIR/hooks.json"
+
+  local result
+  result=$(compact_run "$hf" "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  # The reason should contain the actual command from the fixture
+  assert_contains "check-reason: dynamic reason includes command" "$result" "ls -la"
+
+  compact_teardown
+}
+
 # ── Run ──
 
 echo "Hooksmith Test Suite"
@@ -637,5 +717,11 @@ echo ""
 test_compact_disabled
 echo ""
 test_compact_validation
+echo ""
+test_compact_check_deny
+echo ""
+test_compact_check_ask
+echo ""
+test_compact_check_reason
 echo ""
 print_summary
