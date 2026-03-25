@@ -80,27 +80,28 @@ _init_rule_files() {
   done
 }
 
-rules_json="[]"
+map_json="[]"
 while IFS= read -r rule_file; do
   [[ -z "$rule_file" ]] && continue
   rc=$(yq '.rules | length' "$rule_file" 2>/dev/null)
   [[ -z "$rc" || "$rc" == "0" ]] && continue
   for (( i=0; i<rc; i++ )); do
-    rule=$(yq -c ".rules[$i]" "$rule_file" 2>/dev/null)
-    enabled=$(echo "$rule" | jq -r 'if has("enabled") then .enabled | tostring else empty end')
-    [[ "$enabled" == "false" ]] && continue
-    on_field=$(echo "$rule" | jq -r '.on // empty')
+    on_field=$(yq -r ".rules[$i].on // empty" "$rule_file" 2>/dev/null)
+    name=$(yq -r ".rules[$i].name // \"rule-$((i+1))\"" "$rule_file" 2>/dev/null)
+    enabled=$(yq -r "if .rules[$i] | has(\"enabled\") then .rules[$i].enabled | tostring else empty end" "$rule_file" 2>/dev/null)
     [[ -z "$on_field" ]] && continue
+    [[ "$enabled" == "false" ]] && continue
     ev="${on_field%% *}"; mt="${on_field#"$ev"}"; mt="${mt# }"
-    rule=$(echo "$rule" | jq -c --arg event "$ev" --arg matcher "$mt" --arg file "$rule_file" \
-      '. + {_event:$event, _matcher:$matcher, _file:$file}')
-    rules_json=$(echo "$rules_json" | jq -c --argjson r "$rule" '. + [$r]')
+    map_json=$(echo "$map_json" | jq -c \
+      --arg name "$name" --arg event "$ev" --arg matcher "$mt" \
+      --arg file "$rule_file" --argjson idx "$i" \
+      '. + [{name:$name, event:$event, matcher:$matcher, file:$file, index:$idx}]')
   done
 done < <(_init_rule_files)
 
 mkdir -p "$(dirname "$MAP_FILE")"
-echo "$rules_json" | jq '.' > "$MAP_FILE"
-map_count=$(echo "$rules_json" | jq 'length')
+echo "$map_json" | jq '.' > "$MAP_FILE"
+map_count=$(echo "$map_json" | jq 'length')
 
 echo "Generated $OUTPUT"
 echo "Events registered: ${EVENTS}"
