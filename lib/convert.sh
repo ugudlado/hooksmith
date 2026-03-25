@@ -8,6 +8,9 @@
 # --output-dir  Override output directory (default: ~/.config/hooksmith/rules for user scope)
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/config.sh"
+
 # ── Defaults ──
 
 DRY_RUN=true
@@ -85,10 +88,10 @@ uses_updated_input() {
   local script_path=""
 
   # Try to find a .sh file path in the command
-  script_path=$(echo "$cmd" | grep -oE '(/[^ ]+\.sh|~/[^ ]+\.sh)' | tail -1)
+  script_path=$(extract_script_path "$cmd")
 
   # Expand ~ if present
-  script_path="${script_path/#\~/$HOME}"
+  script_path=$(expand_tilde "$script_path")
 
   if [[ -n "$script_path" && -f "$script_path" ]]; then
     grep -q 'updatedInput' "$script_path" 2>/dev/null
@@ -120,8 +123,8 @@ detect_result() {
 
   # For command hooks, try reading the script
   local script_path=""
-  script_path=$(echo "$cmd" | grep -oE '(/[^ ]+\.sh|~/[^ ]+\.sh)' | tail -1)
-  script_path="${script_path/#\~/$HOME}"
+  script_path=$(extract_script_path "$cmd")
+  script_path=$(expand_tilde "$script_path")
 
   if [[ -n "$script_path" && -f "$script_path" ]]; then
     local content
@@ -228,7 +231,7 @@ for event in $EVENTS; do
         YAML+="${indented_prompt}\n"
       elif [[ "$HOOK_TYPE" == "command" ]]; then
         # Extract script path for script mechanism
-        SCRIPT_PATH=$(echo "$HOOK_CMD" | grep -oE '(/[^ ]+\.sh|~/[^ ]+\.sh)' | tail -1 || true)
+        SCRIPT_PATH=$(extract_script_path "$HOOK_CMD")
         if [[ -n "$SCRIPT_PATH" ]]; then
           # Collapse $HOME back to ~
           SCRIPT_PATH="${SCRIPT_PATH/#"$HOME"/\~}"

@@ -5,11 +5,12 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/config.sh"
 source "${SCRIPT_DIR}/parse.sh"
 
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-USER_RULES_DIR="${USER_RULES_DIR:-$HOME/.config/hooksmith/rules}"
-PROJECT_RULES_DIR="${PROJECT_RULES_DIR:-.hooksmith/rules}"
+USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
+PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"
 
 # ── Resolve id to rule file ──
 
@@ -42,14 +43,17 @@ main() {
   local rule_file
   rule_file=$(resolve_rule "$id")
   if [[ -z "$rule_file" ]]; then
+    debug "rule not found for id '$id'"
     echo "hooksmith run: rule not found for id '$id'" >&2
     exit 0  # fail-open
   fi
+  debug "resolved rule '$id' -> $rule_file"
 
   # Parse YAML
   local parsed
   parsed=$(parse_yaml "$rule_file" 2>/dev/null)
   if [[ -z "$parsed" ]]; then
+    debug "failed to parse rule '$id' from $rule_file"
     echo "hooksmith run: failed to parse rule '$id'" >&2
     exit 0  # fail-open
   fi
@@ -65,7 +69,9 @@ main() {
   local mechanism fail_mode
   mechanism=$(get_val "$parsed" "mechanism")
   fail_mode=$(get_val "$parsed" "fail_mode")
-  [[ -z "$fail_mode" ]] && fail_mode="open"
+  [[ -z "$fail_mode" ]] && fail_mode="$HOOKSMITH_DEFAULT_FAIL_MODE"
+
+  debug "dispatching rule '$id': mechanism=$mechanism fail_mode=$fail_mode"
 
   # Dispatch by mechanism
   local output
@@ -86,7 +92,7 @@ main() {
     script)
       local script_path
       script_path=$(get_val "$parsed" "script")
-      script_path="${script_path/#\~/$HOME}"
+      script_path=$(expand_tilde "$script_path")
       if [[ ! -f "$script_path" ]]; then
         echo "hooksmith run: script not found: $script_path" >&2
         _handle_failure "$fail_mode"

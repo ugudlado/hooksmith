@@ -1,43 +1,28 @@
 #!/bin/bash
-# parse.sh — Shared YAML parser for hooksmith.
+# parse.sh — YAML parser for hooksmith using yq.
 # Provides parse_yaml() and get_val() functions.
 # Source this file from build.sh, run.sh, or list.sh.
+#
+# Requires: yq (https://github.com/kislyuk/yq or https://github.com/mikefarah/yq)
+#
+# parse_yaml outputs JSON from a YAML file.
+# get_val extracts a top-level field from that JSON.
 
-# ── YAML parser (flat key: value only, with multi-line support for `key: |`) ──
+_check_yq() {
+  if ! command -v yq &>/dev/null; then
+    echo "ERROR: yq is required but not installed." >&2
+    echo "Install: pip install yq  (or)  brew install yq  (or)  snap install yq" >&2
+    return 1
+  fi
+}
 
 parse_yaml() {
-  awk '
-    /^#/ || /^[[:space:]]*$/ { next }
-    /^[a-z_]+:[[:space:]]*\|[[:space:]]*$/ {
-      key = $0; sub(/:.*/, "", key)
-      multiline = 1; val = ""
-      next
-    }
-    multiline && /^[[:space:]]/ {
-      line = $0; sub(/^[[:space:]][[:space:]]/, "", line)
-      val = (val == "" ? line : val "\n" line)
-      next
-    }
-    multiline {
-      print key "=" val
-      multiline = 0
-    }
-    /^[a-z_]+:/ {
-      key = $0; sub(/:.*/, "", key)
-      val = $0; sub(/^[^:]*:[[:space:]]*/, "", val)
-      gsub(/^["'"'"']|["'"'"']$/, "", val)
-      print key "=" val
-    }
-    END { if (multiline) print key "=" val }
-  ' "$1"
+  _check_yq || return 1
+  yq '.' "$1" 2>/dev/null
 }
 
 get_val() {
-  local input="$1" key="$2"
-  echo "$input" | awk -v k="$key" '
-    BEGIN { found=0 }
-    found && /^[a-z_]+=/ { exit }
-    found { print; next }
-    index($0, k "=") == 1 { sub("^" k "=", ""); print; found=1 }
-  ' || true
+  local json="$1" key="$2"
+  # Use 'has' check to distinguish missing keys from false/null values
+  echo "$json" | jq -r --arg k "$key" 'if has($k) then .[$k] | tostring else empty end' 2>/dev/null || true
 }
