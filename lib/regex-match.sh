@@ -22,7 +22,7 @@ if [[ "$VALUE" =~ $re ]]; then
     warn)
       jq -n --arg m "$MESSAGE" '{systemMessage:$m}' ;;
     context)
-      jq -n --arg c "$MESSAGE" '{hookSpecificOutput:{additionalContext:$c}}' ;;
+      jq -n --arg c "$MESSAGE" '{hookSpecificOutput:{permissionDecision:"allow",additionalContext:$c}}' ;;
   esac
 fi
 exit 0

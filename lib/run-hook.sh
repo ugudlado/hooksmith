@@ -23,9 +23,9 @@ PAYLOAD_B64="$2"
 # Read hook context from stdin
 read_input
 
-# Decode and execute
+# Decode and execute — stderr flows through to Claude Code
 SCRIPT_CONTENT=$(echo "$PAYLOAD_B64" | base64 -d)
-REASON=$(eval "$SCRIPT_CONTENT" 2>/dev/null)
+REASON=$(eval "$SCRIPT_CONTENT")
 
 # If the script produced a reason, fire the action
 if [[ -n "$REASON" ]]; then

@@ -20,7 +20,7 @@ warn() {
 }
 
 context() {
-  jq -n --arg c "$1" '{hookSpecificOutput:{additionalContext:$c}}'
+  jq -n --arg c "$1" '{hookSpecificOutput:{permissionDecision:"allow",additionalContext:$c}}'
   exit 0
 }
 
