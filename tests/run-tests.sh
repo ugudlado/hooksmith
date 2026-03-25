@@ -449,6 +449,58 @@ YAML
   eval_teardown
 }
 
+# ── Map auto-rebuild tests ──
+
+test_eval_map_auto_rebuild() {
+  echo "map auto-rebuild"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: original-rule
+    on: PreToolUse Bash
+    match: command =~ git\s+push
+    deny: Push blocked
+YAML
+
+  # First eval builds the map
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "map: first eval builds map and denies" "$result"
+
+  # Map file should exist
+  if [[ -f "$EVAL_DIR/.hooksmith/.map.json" ]]; then
+    _pass "map: .map.json created"
+  else
+    _fail "map: .map.json created" "file not found"
+  fi
+
+  # Second eval uses cached map (rule still works)
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_denied "map: cached map still denies" "$result"
+
+  # Update rules — add a new rule, touch file to ensure newer timestamp
+  sleep 1
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: updated-rule
+    on: PreToolUse Bash
+    match: command =~ ls
+    deny: ls is now blocked
+YAML
+
+  # Eval should detect stale map, rebuild, and use new rule
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_denied "map: auto-rebuild picks up new rule" "$result"
+  assert_contains "map: new reason after rebuild" "$result" "ls is now blocked"
+
+  # Old rule should no longer match
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  assert_allowed "map: old rule gone after rebuild" "$result"
+
+  eval_teardown
+}
+
 # ── Init command ──
 
 test_init() {
@@ -502,6 +554,10 @@ echo "──────────"
 test_eval_multi_file
 echo ""
 test_eval_flat_rules_folder
+echo ""
+echo "map"
+echo "───"
+test_eval_map_auto_rebuild
 echo ""
 echo "debug"
 echo "─────"

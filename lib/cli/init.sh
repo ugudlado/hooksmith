@@ -61,8 +61,50 @@ done
 mkdir -p "$(dirname "$OUTPUT")"
 echo "$hooks_json" | jq '.' > "$OUTPUT"
 
+# ── Build rule map for fast lookups ──
+source "${SCRIPT_DIR}/../core/config.sh"
+MAP_FILE=".hooksmith/.map.json"
+
+# Reuse _rule_files and _build_map logic inline
+_init_rule_files() {
+  local dirs=(".hooksmith" "$HOME/.config/hooksmith")
+  for dir in "${dirs[@]}"; do
+    [[ -f "$dir/hooksmith.yaml" ]] && echo "$dir/hooksmith.yaml"
+    if [[ -d "$dir/rules" ]]; then
+      for f in "$dir/rules"/*.yaml; do [[ -f "$f" ]] && echo "$f"; done
+      for sub in "$dir/rules"/*/; do
+        [[ -d "$sub" ]] || continue
+        for f in "$sub"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
+      done
+    fi
+  done
+}
+
+rules_json="[]"
+while IFS= read -r rule_file; do
+  [[ -z "$rule_file" ]] && continue
+  rc=$(yq '.rules | length' "$rule_file" 2>/dev/null)
+  [[ -z "$rc" || "$rc" == "0" ]] && continue
+  for (( i=0; i<rc; i++ )); do
+    rule=$(yq -c ".rules[$i]" "$rule_file" 2>/dev/null)
+    enabled=$(echo "$rule" | jq -r 'if has("enabled") then .enabled | tostring else empty end')
+    [[ "$enabled" == "false" ]] && continue
+    on_field=$(echo "$rule" | jq -r '.on // empty')
+    [[ -z "$on_field" ]] && continue
+    ev="${on_field%% *}"; mt="${on_field#"$ev"}"; mt="${mt# }"
+    rule=$(echo "$rule" | jq -c --arg event "$ev" --arg matcher "$mt" --arg file "$rule_file" \
+      '. + {_event:$event, _matcher:$matcher, _file:$file}')
+    rules_json=$(echo "$rules_json" | jq -c --argjson r "$rule" '. + [$r]')
+  done
+done < <(_init_rule_files)
+
+mkdir -p "$(dirname "$MAP_FILE")"
+echo "$rules_json" | jq '.' > "$MAP_FILE"
+map_count=$(echo "$rules_json" | jq 'length')
+
 echo "Generated $OUTPUT"
 echo "Events registered: ${EVENTS}"
+echo "Rule map: $MAP_FILE ($map_count rules indexed)"
 echo ""
-echo "Rules are evaluated live from hooksmith.yaml — no build step needed."
-echo "Edit your rules in .hooksmith/hooksmith.yaml or ~/.config/hooksmith/hooksmith.yaml"
+echo "Edit rules in .hooksmith/hooksmith.yaml or ~/.config/hooksmith/hooksmith.yaml"
+echo "Map auto-rebuilds when rule files change."

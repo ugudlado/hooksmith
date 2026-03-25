@@ -1,59 +1,99 @@
 #!/bin/bash
-# eval.sh — Live rule evaluator. Reads rules from YAML files, matches, returns decision.
-# No build step. Called directly from hooks.json.
+# eval.sh — Rule evaluator with auto-indexing map for fast lookups.
 #
-# Usage: eval.sh
-#   Reads hook context JSON on stdin (from Claude Code).
-#   Scans rule files from project and user scope.
-#   Evaluates matching rules and outputs decision JSON.
+# On first run (or when rule files change), builds a JSON map at
+# .hooksmith/.map.json that indexes all rules by event. Subsequent
+# runs skip YAML parsing entirely and evaluate from the map.
 #
 # Rule file locations (all scanned, project scope first):
-#   .hooksmith/hooksmith.yaml                — project single-file rules
-#   .hooksmith/rules/*.yaml                  — project rule folder
-#   .hooksmith/rules/<subfolder>/*.yaml      — project grouped rules
-#   ~/.config/hooksmith/hooksmith.yaml       — user single-file rules
-#   ~/.config/hooksmith/rules/*.yaml         — user rule folder
-#   ~/.config/hooksmith/rules/<subfolder>/*.yaml — user grouped rules
-#
-# Example folder structure:
-#   .hooksmith/
-#     hooksmith.yaml           — quick rules
-#     rules/
-#       security/
-#         block-rm.yaml
-#         sudo-guard.yaml
-#       formatting/
-#         lint-on-save.yaml
+#   .hooksmith/hooksmith.yaml, .hooksmith/rules/**/*.yaml
+#   ~/.config/hooksmith/hooksmith.yaml, ~/.config/hooksmith/rules/**/*.yaml
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/core/config.sh"
 source "${SCRIPT_DIR}/core/hooklib.sh"
 
-# ── Collect all rule files (project scope first, then user scope) ──
+MAP_FILE=".hooksmith/.map.json"
+
+# ── Collect all rule files ──
 
 _rule_files() {
-  local dirs=(
-    ".hooksmith"
-    "$HOME/.config/hooksmith"
-  )
+  local dirs=(".hooksmith" "$HOME/.config/hooksmith")
   for dir in "${dirs[@]}"; do
-    # Single-file rules
     [[ -f "$dir/hooksmith.yaml" ]] && echo "$dir/hooksmith.yaml"
-    # Rule folder (flat)
     if [[ -d "$dir/rules" ]]; then
-      for f in "$dir/rules"/*.yaml; do
-        [[ -f "$f" ]] && echo "$f"
-      done
-      # Subfolders (one level deep for grouping)
+      for f in "$dir/rules"/*.yaml; do [[ -f "$f" ]] && echo "$f"; done
       for sub in "$dir/rules"/*/; do
         [[ -d "$sub" ]] || continue
-        for f in "$sub"*.yaml; do
-          [[ -f "$f" ]] && echo "$f"
-        done
+        for f in "$sub"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
       done
     fi
   done
+}
+
+# ── Check if map is fresh (newer than all rule files) ──
+
+_map_is_fresh() {
+  [[ -f "$MAP_FILE" ]] || return 1
+  while IFS= read -r f; do
+    [[ "$f" -nt "$MAP_FILE" ]] && return 1
+  done < <(_rule_files)
+  return 0
+}
+
+# ── Build the map: pre-parse all rules into a single JSON file ──
+
+_build_map() {
+  debug "map: rebuilding $MAP_FILE"
+  local rules_json="[]"
+
+  while IFS= read -r rule_file; do
+    [[ -z "$rule_file" ]] && continue
+    local rule_count
+    rule_count=$(yq '.rules | length' "$rule_file" 2>/dev/null)
+    [[ -z "$rule_count" || "$rule_count" == "0" ]] && continue
+
+    local i
+    for (( i=0; i<rule_count; i++ )); do
+      local rule
+      rule=$(yq -c ".rules[$i]" "$rule_file" 2>/dev/null)
+      [[ -z "$rule" ]] && continue
+
+      # Skip disabled
+      local enabled
+      enabled=$(echo "$rule" | jq -r 'if has("enabled") then .enabled | tostring else empty end')
+      [[ "$enabled" == "false" ]] && continue
+
+      local on_field
+      on_field=$(echo "$rule" | jq -r '.on // empty')
+      [[ -z "$on_field" ]] && continue
+
+      # Extract event and matcher from "on" field
+      local event="${on_field%% *}"
+      local matcher="${on_field#"$event"}"
+      matcher="${matcher# }"
+
+      # Add source file and parsed event/matcher to the rule
+      rule=$(echo "$rule" | jq -c \
+        --arg event "$event" --arg matcher "$matcher" --arg file "$rule_file" \
+        '. + {_event:$event, _matcher:$matcher, _file:$file}')
+
+      rules_json=$(echo "$rules_json" | jq -c --argjson r "$rule" '. + [$r]')
+    done
+  done < <(_rule_files)
+
+  mkdir -p "$(dirname "$MAP_FILE")"
+  echo "$rules_json" | jq '.' > "$MAP_FILE"
+  debug "map: indexed $(echo "$rules_json" | jq 'length') rules"
+}
+
+# ── Load map, rebuild if stale ──
+
+_ensure_map() {
+  if ! _map_is_fresh; then
+    _build_map
+  fi
 }
 
 # ── Extract event + tool from stdin JSON ──
@@ -65,32 +105,23 @@ _parse_context() {
   debug "eval: event=$HOOK_EVENT tool=$TOOL_NAME"
 }
 
-# ── Check if a rule's "on" field matches the current event+tool ──
+# ── Check if a rule's matcher matches the current tool ──
 
-_rule_matches() {
-  local on_field="$1"
-  local rule_event="${on_field%% *}"
-  local rule_matcher="${on_field#"$rule_event"}"
-  rule_matcher="${rule_matcher# }"
-
-  # Event must match
-  [[ "$rule_event" != "$HOOK_EVENT" ]] && return 1
-
-  # If rule has a matcher, check it against the tool name (regex)
-  if [[ -n "$rule_matcher" && -n "$TOOL_NAME" ]]; then
-    local re="^(${rule_matcher})$"
-    [[ "$TOOL_NAME" =~ $re ]] || return 1
-  fi
-
-  return 0
+_matcher_matches() {
+  local matcher="$1"
+  # No matcher = matches everything
+  [[ -z "$matcher" ]] && return 0
+  # No tool name = only match if no matcher
+  [[ -z "$TOOL_NAME" ]] && return 1
+  local re="^(${matcher})$"
+  [[ "$TOOL_NAME" =~ $re ]]
 }
 
-# ── Evaluate a single rule ──
+# ── Evaluate a single rule from the map ──
 
 _eval_rule() {
   local rule="$1" input="$2"
 
-  # Detect action
   local action="" message=""
   for a in deny ask context; do
     local val
@@ -101,11 +132,9 @@ _eval_rule() {
   done
   [[ -z "$action" ]] && return 0
 
-  # Detect mechanism
   local match_field run_field
   match_field=$(echo "$rule" | jq -r '.match // empty')
   run_field=$(echo "$rule" | jq -r '.run // empty')
-
   local name
   name=$(echo "$rule" | jq -r '.name // "unnamed"')
 
@@ -193,41 +222,36 @@ main() {
     exit 0
   fi
 
-  while IFS= read -r rule_file; do
-    [[ -z "$rule_file" ]] && continue
-    debug "eval: scanning $rule_file"
+  _ensure_map
 
-    local rule_count
-    rule_count=$(yq '.rules | length' "$rule_file" 2>/dev/null)
-    [[ -z "$rule_count" || "$rule_count" == "0" ]] && continue
+  # Query map: get rules matching this event, then filter by matcher
+  local matching_rules
+  matching_rules=$(jq -c --arg e "$HOOK_EVENT" '[.[] | select(._event == $e)]' "$MAP_FILE")
 
-    local i
-    for (( i=0; i<rule_count; i++ )); do
-      local rule
-      rule=$(yq -c ".rules[$i]" "$rule_file" 2>/dev/null)
+  local rule_count
+  rule_count=$(echo "$matching_rules" | jq 'length')
+  debug "eval: $rule_count rules for event $HOOK_EVENT"
 
-      # Skip disabled
-      local enabled
-      enabled=$(echo "$rule" | jq -r 'if has("enabled") then .enabled | tostring else empty end')
-      [[ "$enabled" == "false" ]] && continue
+  local i
+  for (( i=0; i<rule_count; i++ )); do
+    local rule
+    rule=$(echo "$matching_rules" | jq -c ".[$i]")
 
-      local on_field
-      on_field=$(echo "$rule" | jq -r '.on // empty')
-      [[ -z "$on_field" ]] && continue
+    local matcher
+    matcher=$(echo "$rule" | jq -r '._matcher')
 
-      if _rule_matches "$on_field"; then
-        local name
-        name=$(echo "$rule" | jq -r '.name // "rule-'"$((i+1))"'"')
-        debug "eval: evaluating rule '$name'"
+    if _matcher_matches "$matcher"; then
+      local name
+      name=$(echo "$rule" | jq -r '.name // "unnamed"')
+      debug "eval: evaluating rule '$name'"
 
-        if _eval_rule "$rule" "$input"; then
-          :
-        else
-          exit 0
-        fi
+      if _eval_rule "$rule" "$input"; then
+        :
+      else
+        exit 0
       fi
-    done
-  done < <(_rule_files)
+    fi
+  done
 
   exit 0
 }
