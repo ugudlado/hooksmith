@@ -183,10 +183,11 @@ main() {
     exit 0
   fi
 
-  # Auto-init on SessionStart: rebuild map and regenerate hooks.json
+  # Auto-init on SessionStart: rebuild the map index
+  # hooks.json is pre-registered with all events — no runtime rewrite needed
   if [[ "$HOOK_EVENT" == "SessionStart" ]]; then
-    debug "eval: SessionStart — running auto-init"
-    HOOKSMITH_SILENT_INIT=1 OUTPUT="${OUTPUT:-}" bash "${SCRIPT_DIR}/cli/init.sh"
+    debug "eval: SessionStart — rebuilding map"
+    _build_map
     exit 0
   fi
 

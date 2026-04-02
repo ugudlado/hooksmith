@@ -5,7 +5,7 @@
 #
 # Requires: config.sh must be sourced first (for debug and _yq_json).
 
-MAP_FILE="${MAP_FILE:-.hooksmith/.map.json}"
+MAP_FILE="${MAP_FILE:-$HOME/.config/hooksmith/.map.json}"
 
 # ── Collect all rule files ──
 
