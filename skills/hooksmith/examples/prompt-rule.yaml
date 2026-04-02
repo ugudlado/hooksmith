@@ -1,11 +1,5 @@
-# LLM-evaluated security review for bash commands
-id: prompt-rule
-event: PreToolUse
-matcher: Bash
-mechanism: prompt
-result: deny
-prompt: |
-  You are a security reviewer. Examine this bash command: $TOOL_INPUT
-  If the command could delete important files, expose secrets, or modify
-  system configuration, respond with: {"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "Security concern: <reason>"}}
-  Otherwise respond with: {}
+rules:
+  - name: security-review
+    on: PreToolUse Bash
+    prompt: "Review this bash command for security risks. Deny if it modifies system files, accesses credentials, or runs with elevated privileges."
+    ask: true

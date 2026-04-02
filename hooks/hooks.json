@@ -1,153 +1,22 @@
 {
   "hooks": {
-    "Notification": [
+    "PreToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run smart-notify",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval",
             "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run post-compact-reminders",
-            "timeout": 5
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run dev-server-register",
-            "timeout": 10,
-            "async": true
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run auto-format",
-            "timeout": 10,
-            "async": true
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run bash-safety-guard",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run process-kill-guard",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run spec-adherence-check",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run protected-files",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run worktree-boundary",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run session-reflect",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run session-git-status",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "prompt",
-            "prompt": "Review your last response. Did you ask the user any questions, request decisions,\nor present choices that require their input — WITHOUT using the AskUserQuestion tool?\nExempt: rhetorical questions, \"let me know if you need anything\", and confirming\ncompletion of work. Only flag genuine decision/input requests.\nIf you asked questions without AskUserQuestion, respond with:\n{\"decision\": \"block\", \"reason\": \"Rewrite your questions using the AskUserQuestion tool — it provides structured options and better UX.\"}\nOtherwise respond with: {}",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run loop-detector",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run task-complete-check-stop",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run subagent-task-context",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run subagent-gate",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run task-complete-check-subagent",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval",
             "timeout": 10
           }
         ]
@@ -158,35 +27,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run task-gate",
-            "timeout": 10
-          },
-          {
-            "type": "prompt",
-            "prompt": "You are operating under a spec-first development workflow. On every response, you MUST:\n1. FOLLOW ALL PHASES: Never skip steps in /specify, /implement, or /complete-feature.\n   Each command has a defined sequence — execute every step, not just the ones that seem important.\n2. REVIEW GATES: Phase reviews (score >= 9/10) are mandatory. Do not skip them.\n3. EVIDENCE-BASED: Verify before claiming. Run tests, read files, check output.\n4. TASK TRACKING: Mark tasks in_progress before starting, completed when done.\nRespond with: {\"hookSpecificOutput\": {\"additionalContext\": \"WORKFLOW: spec-first active. Follow all phases. No shortcuts.\"}}",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval",
             "timeout": 10
           }
         ]
       }
     ],
-    "WorktreeCreate": [
+    "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run worktree-create",
-            "timeout": 60
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval",
+            "timeout": 10
           }
         ]
       }
     ],
-    "WorktreeRemove": [
+    "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith run worktree-remove",
-            "timeout": 30
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval",
+            "timeout": 10
           }
         ]
       }

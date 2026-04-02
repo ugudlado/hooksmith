@@ -1,0 +1,7 @@
+# run — Script-based rule (external file)
+# Point to a .sh file for reusable or complex logic
+rules:
+  - name: port-scan-guard
+    on: PreToolUse Bash
+    run: ~/.claude/hooks/port-scan-guard.sh
+    deny: true

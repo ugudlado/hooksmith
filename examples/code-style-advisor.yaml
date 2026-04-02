@@ -1,0 +1,7 @@
+# prompt — LLM context injection
+# Injects guidance for Claude to consider (non-blocking)
+rules:
+  - name: code-style-advisor
+    on: PreToolUse Write|Edit
+    prompt: "Check if this file edit follows the project's coding conventions: consistent naming, no magic numbers, functions under 30 lines. If not, suggest improvements in your response."
+    context: true

@@ -1,5 +1,8 @@
 # Build artifacts
 hooks/.rules-checksum
 
+# Runtime-generated rule index (rebuilt automatically by hooksmith eval/init)
+.hooksmith/.map.json
+
 # Local settings (personal permissions, not shared)
 .claude/settings.local.json

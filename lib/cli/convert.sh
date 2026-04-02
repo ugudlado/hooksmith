@@ -8,6 +8,9 @@
 # --output-dir  Override output directory (default: ~/.config/hooksmith/rules for user scope)
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/../core/config.sh"
+
 # ── Defaults ──
 
 DRY_RUN=true
@@ -34,6 +37,7 @@ while [[ $# -gt 0 ]]; do
       echo "Hooks that are skipped:"
       echo "  - Plugin hooks (contain \${CLAUDE_PLUGIN_ROOT})"
       echo "  - type: http or type: agent hooks"
+      echo "  - type: prompt hooks (not supported by hooksmith eval)"
       echo "  - Scripts that use updatedInput (detected via grep)"
       exit 0
       ;;
@@ -77,51 +81,26 @@ slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
 }
 
-# Check if a command script uses updatedInput
 uses_updated_input() {
   local cmd="$1"
-  # Extract the script path from the command string
-  # Hooks can be: "bash /path/to/script.sh" or "/path/to/script.sh" or "bash -c '...'"
   local script_path=""
-
-  # Try to find a .sh file path in the command
-  script_path=$(echo "$cmd" | grep -oE '(/[^ ]+\.sh|~/[^ ]+\.sh)' | tail -1)
-
-  # Expand ~ if present
-  script_path="${script_path/#\~/$HOME}"
+  script_path=$(extract_script_path "$cmd")
+  script_path=$(expand_tilde "$script_path")
 
   if [[ -n "$script_path" && -f "$script_path" ]]; then
     grep -q 'updatedInput' "$script_path" 2>/dev/null
     return $?
   fi
 
-  # If we can't find the script, check the command string itself
   echo "$cmd" | grep -q 'updatedInput' 2>/dev/null
   return $?
 }
 
-# Determine result type by reading a script's output patterns
-detect_result() {
-  local cmd="$1" hook_type="$2"
-
-  if [[ "$hook_type" == "prompt" ]]; then
-    # Prompt hooks: scan the prompt text for decision patterns
-    if echo "$cmd" | grep -q 'permissionDecision.*deny\|"deny"'; then
-      echo "deny"
-    elif echo "$cmd" | grep -q 'permissionDecision.*ask\|"ask"'; then
-      echo "ask"
-    elif echo "$cmd" | grep -q 'decision.*block\|"block"'; then
-      echo "deny"
-    else
-      echo "warn"
-    fi
-    return
-  fi
-
-  # For command hooks, try reading the script
+detect_action() {
+  local cmd="$1"
   local script_path=""
-  script_path=$(echo "$cmd" | grep -oE '(/[^ ]+\.sh|~/[^ ]+\.sh)' | tail -1)
-  script_path="${script_path/#\~/$HOME}"
+  script_path=$(extract_script_path "$cmd")
+  script_path=$(expand_tilde "$script_path")
 
   if [[ -n "$script_path" && -f "$script_path" ]]; then
     local content
@@ -132,17 +111,15 @@ detect_result() {
       echo "ask"
     elif echo "$content" | grep -q 'decision.*block\|block_stop'; then
       echo "deny"
-    elif echo "$content" | grep -q 'systemMessage\|warn "'; then
-      echo "warn"
     elif echo "$content" | grep -q 'additionalContext\|context "'; then
       echo "context"
     else
-      echo "warn"
+      echo "context"
     fi
     return
   fi
 
-  echo "warn"
+  echo "context"
 }
 
 # ── Process hooks ──
@@ -151,11 +128,11 @@ converted=0
 skipped=0
 skipped_reasons=()
 
-# Get all event names
+declare -A file_rules
+
 EVENTS=$(echo "$HOOKS_JSON" | jq -r 'keys[]')
 
 for event in $EVENTS; do
-  # Iterate over matcher groups within this event
   GROUP_COUNT=$(echo "$HOOKS_JSON" | jq -r --arg e "$event" '.[$e] | length')
 
   for (( gi=0; gi<GROUP_COUNT; gi++ )); do
@@ -168,110 +145,93 @@ for event in $EVENTS; do
       HOOK_TYPE=$(echo "$HOOK" | jq -r '.type')
       HOOK_CMD=$(echo "$HOOK" | jq -r '.command // .prompt // ""')
       HOOK_TIMEOUT=$(echo "$HOOK" | jq -r '.timeout // empty')
-      HOOK_ASYNC=$(echo "$HOOK" | jq -r '.async // empty')
 
       # ── Skip conditions ──
 
-      # Skip plugin hooks
       if echo "$HOOK_CMD" | grep -q 'CLAUDE_PLUGIN_ROOT'; then
         skipped=$((skipped + 1))
         skipped_reasons+=("  SKIP [plugin]: $event${MATCHER:+ ($MATCHER)} — contains \${CLAUDE_PLUGIN_ROOT}")
         continue
       fi
 
-      # Skip unsupported types
       if [[ "$HOOK_TYPE" == "http" || "$HOOK_TYPE" == "agent" ]]; then
         skipped=$((skipped + 1))
         skipped_reasons+=("  SKIP [unsupported type]: $event${MATCHER:+ ($MATCHER)} — type: $HOOK_TYPE")
         continue
       fi
 
-      # Skip updatedInput hooks (option B)
+      if [[ "$HOOK_TYPE" == "prompt" ]]; then
+        skipped=$((skipped + 1))
+        skipped_reasons+=("  SKIP [prompt]: $event${MATCHER:+ ($MATCHER)} — prompt hooks not supported by hooksmith eval")
+        continue
+      fi
+
       if [[ "$HOOK_TYPE" == "command" ]] && uses_updated_input "$HOOK_CMD"; then
         skipped=$((skipped + 1))
         skipped_reasons+=("  SKIP [updatedInput]: $event${MATCHER:+ ($MATCHER)} — script uses updatedInput")
         continue
       fi
 
-      # ── Generate YAML ──
+      # ── Generate rule in new schema ──
 
-      # Build filename
       local_slug=$(slugify "${event}${MATCHER:+-$MATCHER}")
-      # Add index suffix if multiple hooks in same group
       if [[ $HOOK_COUNT -gt 1 ]]; then
         local_slug="${local_slug}-$((hi + 1))"
       fi
-      FILENAME="${local_slug}.yaml"
 
-      # Detect mechanism and result
-      RESULT=$(detect_result "$HOOK_CMD" "$HOOK_TYPE")
+      ON_FIELD="$event"
+      [[ -n "$MATCHER" ]] && ON_FIELD="$event $MATCHER"
 
-      # Derive id from filename (strip .yaml extension)
-      RULE_ID="${local_slug}"
-      # Ensure id is valid kebab-case (slugify already handles this)
-      if [[ ! "$RULE_ID" =~ ^[a-z0-9-]+$ ]]; then
-        RULE_ID=$(slugify "$RULE_ID")
-      fi
+      ACTION=$(detect_action "$HOOK_CMD")
 
-      # Build YAML content — id first, then event
-      YAML="# Converted from ${SCOPE} settings.json\n"
-      YAML+="id: ${RULE_ID}\n"
-      YAML+="event: ${event}\n"
-      [[ -n "$MATCHER" ]] && YAML+="matcher: ${MATCHER}\n"
+      SCRIPT_PATH=$(extract_script_path "$HOOK_CMD")
 
-      if [[ "$HOOK_TYPE" == "prompt" ]]; then
-        YAML+="mechanism: prompt\n"
-        YAML+="result: ${RESULT}\n"
-        # Multi-line prompt — indent each line under YAML block scalar
-        YAML+="prompt: |\n"
-        indented_prompt=$(echo "$HOOK_CMD" | sed 's/^/  /')
-        YAML+="${indented_prompt}\n"
-      elif [[ "$HOOK_TYPE" == "command" ]]; then
-        # Extract script path for script mechanism
-        SCRIPT_PATH=$(echo "$HOOK_CMD" | grep -oE '(/[^ ]+\.sh|~/[^ ]+\.sh)' | tail -1 || true)
-        if [[ -n "$SCRIPT_PATH" ]]; then
-          # Collapse $HOME back to ~
-          SCRIPT_PATH="${SCRIPT_PATH/#"$HOME"/\~}"
-          YAML+="mechanism: script\n"
-          YAML+="result: ${RESULT}\n"
-          YAML+="script: ${SCRIPT_PATH}\n"
-        else
-          # Inline command — wrap as script
-          YAML+="mechanism: script\n"
-          YAML+="result: ${RESULT}\n"
-          YAML+="# TODO: extract this inline command into a standalone .sh script\n"
-          YAML+="# Original command: ${HOOK_CMD}\n"
-          YAML+="script: # FIXME: provide script path\n"
-        fi
-      fi
+      RULE_YAML="  - name: ${local_slug}\n"
+      RULE_YAML+="    on: ${ON_FIELD}\n"
 
-      # Optional fields
-      [[ -n "$HOOK_TIMEOUT" && "$HOOK_TIMEOUT" != "null" ]] && YAML+="timeout: ${HOOK_TIMEOUT}\n"
-      [[ -n "$HOOK_ASYNC" && "$HOOK_ASYNC" != "null" && "$HOOK_ASYNC" != "false" ]] && YAML+="async: true\n"
-
-      # ── Output ──
-
-      if $DRY_RUN; then
-        echo "--- $FILENAME ---"
-        printf '%b' "$YAML"
-        echo ""
+      if [[ -n "$SCRIPT_PATH" ]]; then
+        SCRIPT_PATH="${SCRIPT_PATH/#"$HOME"/\~}"
+        RULE_YAML+="    run: ${SCRIPT_PATH}\n"
       else
-        # Check for existing file
-        TARGET="$OUTPUT_DIR/$FILENAME"
-        if [[ -f "$TARGET" ]]; then
-          echo "  EXISTS: $TARGET — skipping (won't overwrite)" >&2
-          skipped=$((skipped + 1))
-          skipped_reasons+=("  SKIP [exists]: $FILENAME — file already exists in output directory")
-          continue
-        fi
-        mkdir -p "$OUTPUT_DIR"
-        printf '%b' "$YAML" > "$TARGET"
-        echo "  CREATED: $TARGET"
+        RULE_YAML+="    # TODO: extract inline command to a .sh script\n"
+        RULE_YAML+="    # Original command: ${HOOK_CMD}\n"
+        RULE_YAML+="    run: \"# FIXME: provide script path or inline script\"\n"
       fi
+
+      RULE_YAML+="    ${ACTION}: \"Triggered by ${local_slug}\"\n"
+
+      [[ -n "$HOOK_TIMEOUT" && "$HOOK_TIMEOUT" != "null" && "$HOOK_TIMEOUT" != "10" ]] && \
+        RULE_YAML+="    # timeout: ${HOOK_TIMEOUT}\n"
+
+      FILENAME="${local_slug}.yaml"
+      file_rules["$FILENAME"]="${file_rules[$FILENAME]:-}${RULE_YAML}"
 
       converted=$((converted + 1))
     done
   done
+done
+
+# ── Output ──
+
+for FILENAME in $(echo "${!file_rules[@]}" | tr ' ' '\n' | sort); do
+  YAML="# Converted from ${SCOPE} settings.json\nrules:\n${file_rules[$FILENAME]}"
+
+  if $DRY_RUN; then
+    echo "--- $FILENAME ---"
+    printf '%b' "$YAML"
+    echo ""
+  else
+    TARGET="$OUTPUT_DIR/$FILENAME"
+    if [[ -f "$TARGET" ]]; then
+      echo "  EXISTS: $TARGET — skipping (won't overwrite)" >&2
+      skipped=$((skipped + 1))
+      skipped_reasons+=("  SKIP [exists]: $FILENAME — file already exists in output directory")
+      continue
+    fi
+    mkdir -p "$OUTPUT_DIR"
+    printf '%b' "$YAML" > "$TARGET"
+    echo "  CREATED: $TARGET"
+  fi
 done
 
 # ── Summary ──
