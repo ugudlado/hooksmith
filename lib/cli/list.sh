@@ -54,13 +54,16 @@ _detect_action() {
 
 _detect_mechanism() {
   local rule="$1"
-  local has_match has_run
+  local has_match has_run has_prompt
   has_match=$(printf '%s\n' "$rule" | jq -r '.match // empty')
   has_run=$(printf '%s\n' "$rule" | jq -r '.run // empty')
+  has_prompt=$(printf '%s\n' "$rule" | jq -r '.prompt // empty')
   if [[ -n "$has_match" ]]; then
     echo "match"
   elif [[ -n "$has_run" ]]; then
     echo "run"
+  elif [[ -n "$has_prompt" ]]; then
+    echo "prompt"
   else
     echo "—"
   fi
