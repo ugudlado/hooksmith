@@ -2,9 +2,9 @@
 # eval.sh — Rule evaluator with auto-indexing map for fast routing.
 #
 # The map (.hooksmith/.map.json) is a lightweight index:
-#   [{"name":"block-rm","event":"PreToolUse","matcher":"Bash","file":".hooksmith/rules/security/block-rm.yaml","index":0}]
+#   [{"name":"block-rm","file":".hooksmith/rules/security/block-rm.yaml","index":0}]
 #
-# It only stores name, event, matcher, file path, and rule index.
+# It only stores name, file path, and rule index.
 # The actual rule content stays in YAML — map is just for routing.
 # On eval, the map tells us which file+index to load, then we parse
 # only that one rule from YAML.
@@ -15,76 +15,13 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/core/config.sh"
 source "${SCRIPT_DIR}/core/hooklib.sh"
-
-MAP_FILE=".hooksmith/.map.json"
-
-# ── Collect all rule files ──
-
-_rule_files() {
-  local dirs=(".hooksmith" "$HOME/.config/hooksmith")
-  for dir in "${dirs[@]}"; do
-    [[ -f "$dir/hooksmith.yaml" ]] && echo "$dir/hooksmith.yaml"
-    if [[ -d "$dir/rules" ]]; then
-      for f in "$dir/rules"/*.yaml; do [[ -f "$f" ]] && echo "$f"; done
-      for sub in "$dir/rules"/*/; do
-        [[ -d "$sub" ]] || continue
-        for f in "$sub"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
-      done
-    fi
-  done
-}
-
-# ── Check if map is fresh ──
-
-_map_is_fresh() {
-  [[ -f "$MAP_FILE" ]] || return 1
-  while IFS= read -r f; do
-    [[ "$f" -nt "$MAP_FILE" ]] && return 1
-  done < <(_rule_files)
-  return 0
-}
-
-# ── Build the map: just name, file, index ──
-
-_build_map() {
-  debug "map: rebuilding $MAP_FILE"
-  local map_json="[]"
-
-  while IFS= read -r rule_file; do
-    [[ -z "$rule_file" ]] && continue
-    local rule_count
-    rule_count=$(yq '.rules | length' "$rule_file" 2>/dev/null)
-    [[ -z "$rule_count" || "$rule_count" == "0" ]] && continue
-
-    local i
-    for (( i=0; i<rule_count; i++ )); do
-      local name enabled
-      name=$(yq -r ".rules[$i].name // \"rule-$((i+1))\"" "$rule_file" 2>/dev/null)
-      enabled=$(yq -r "if .rules[$i] | has(\"enabled\") then .rules[$i].enabled | tostring else empty end" "$rule_file" 2>/dev/null)
-      [[ "$enabled" == "false" ]] && continue
-
-      map_json=$(echo "$map_json" | jq -c \
-        --arg name "$name" --arg file "$rule_file" --argjson idx "$i" \
-        '. + [{name:$name, file:$file, index:$idx}]')
-    done
-  done < <(_rule_files)
-
-  mkdir -p "$(dirname "$MAP_FILE")"
-  echo "$map_json" | jq '.' > "$MAP_FILE"
-  debug "map: indexed $(echo "$map_json" | jq 'length') rules"
-}
-
-_ensure_map() {
-  if ! _map_is_fresh; then
-    _build_map
-  fi
-}
+source "${SCRIPT_DIR}/core/map.sh"
 
 # ── Load a single rule from its YAML file by index ──
 
 _load_rule() {
   local file="$1" idx="$2"
-  yq -c ".rules[$idx]" "$file" 2>/dev/null
+  _yq_json ".rules[$idx]" "$file" | jq -c '.' 2>/dev/null
 }
 
 # ── Extract event + tool from stdin JSON ──
@@ -100,6 +37,9 @@ _parse_context() {
 
 _rule_matches() {
   local on_field="$1"
+  # Normalize whitespace: collapse runs, trim edges
+  on_field=$(echo "$on_field" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
+
   local rule_event="${on_field%% *}"
   local rule_matcher="${on_field#"$rule_event"}"
   rule_matcher="${rule_matcher# }"
@@ -114,16 +54,6 @@ _rule_matches() {
   return 0
 }
 
-# ── Check if matcher matches the current tool ──
-
-_matcher_matches() {
-  local matcher="$1"
-  [[ -z "$matcher" ]] && return 0
-  [[ -z "$TOOL_NAME" ]] && return 1
-  local re="^(${matcher})$"
-  [[ "$TOOL_NAME" =~ $re ]]
-}
-
 # ── Evaluate a single rule ──
 
 _eval_rule() {
@@ -132,23 +62,34 @@ _eval_rule() {
   local action="" message=""
   for a in deny ask context; do
     local val
-    val=$(echo "$rule" | jq -r "if has(\"$a\") then .$a | tostring else empty end")
+    val=$(printf '%s\n' "$rule" | jq -r "if has(\"$a\") then .$a | tostring else empty end")
     if [[ -n "$val" ]]; then
       action="$a"; message="$val"; break
     fi
   done
   [[ -z "$action" ]] && return 0
 
-  local match_field run_field
-  match_field=$(echo "$rule" | jq -r '.match // empty')
-  run_field=$(echo "$rule" | jq -r '.run // empty')
+  # Fix bare "true" messages (e.g. deny: true) — generate a useful message
+  if [[ "$message" == "true" ]]; then
+    local rule_name
+    rule_name=$(printf '%s\n' "$rule" | jq -r '.name // "unnamed"')
+    message="Blocked by rule: $rule_name"
+    debug "eval [$rule_name]: action '$action' had bare 'true', using generated message"
+  fi
+
+  local match_field run_field prompt_field
+  match_field=$(printf '%s\n' "$rule" | jq -r '.match // empty')
+  run_field=$(printf '%s\n' "$rule" | jq -r '.run // empty')
+  prompt_field=$(printf '%s\n' "$rule" | jq -r '.prompt // empty')
   local name
-  name=$(echo "$rule" | jq -r '.name // "unnamed"')
+  name=$(printf '%s\n' "$rule" | jq -r '.name // "unnamed"')
 
   if [[ -n "$match_field" ]]; then
     _eval_match "$name" "$match_field" "$message" "$action" "$input"
   elif [[ -n "$run_field" ]]; then
     _eval_run "$name" "$run_field" "$action" "$input"
+  elif [[ -n "$prompt_field" ]]; then
+    _eval_prompt "$name" "$prompt_field" "$action" "$input"
   fi
 }
 
@@ -164,7 +105,7 @@ _eval_match() {
   pattern=$(echo "$pattern" | sed "s/^[\"']//; s/[\"']$//")
 
   local value
-  value=$(echo "$input" | jq -r --arg f "$field" '.tool_input[$f] // .[$f] // empty')
+  value=$(printf '%s\n' "$input" | jq -r --arg f "$field" '.tool_input[$f] // .[$f] // empty')
 
   local re="$pattern"
   if [[ "$value" =~ $re ]]; then
@@ -183,12 +124,15 @@ _eval_run() {
   resolved_path=$(expand_tilde "$run_field")
   if [[ -f "$resolved_path" ]]; then
     script_content=$(cat "$resolved_path")
+  elif [[ "$run_field" == */* || "$run_field" == ~* ]]; then
+    debug "eval [$name]: script file not found: $resolved_path"
+    return 0
   else
     script_content="$run_field"
   fi
 
   local reason
-  HOOKLIB="${SCRIPT_DIR}/core/hooklib.sh" INPUT="$input" reason=$(eval "$script_content" 2>/dev/null) || true
+  HOOKLIB="${SCRIPT_DIR}/core/hooklib.sh" INPUT="$input" reason=$(eval "$script_content") || true
 
   if [[ -n "$reason" ]]; then
     debug "eval [$name]: script returned reason: $reason"
@@ -196,6 +140,22 @@ _eval_run() {
     return 1
   fi
   return 0
+}
+
+_eval_prompt() {
+  local name="$1" prompt_field="$2" action="$3" input="$4"
+
+  # Build context: prompt text + serialized tool input for Claude to reason about
+  local tool_input
+  tool_input=$(printf '%s\n' "$input" | jq -c '.tool_input // {}')
+  local full_prompt="[hooksmith:$name] $prompt_field
+
+Tool input:
+$tool_input"
+
+  debug "eval [$name]: prompt rule firing, action=$action"
+  _emit_decision "$action" "$full_prompt"
+  return 1
 }
 
 _emit_decision() {
@@ -223,18 +183,26 @@ main() {
     exit 0
   fi
 
+  # Auto-init on SessionStart: rebuild map and regenerate hooks.json
+  if [[ "$HOOK_EVENT" == "SessionStart" ]]; then
+    debug "eval: SessionStart — running auto-init"
+    HOOKSMITH_SILENT_INIT=1 OUTPUT="${OUTPUT:-}" bash "${SCRIPT_DIR}/cli/init.sh"
+    exit 0
+  fi
+
   _ensure_map
 
-  local entry_count
-  entry_count=$(jq 'length' "$MAP_FILE")
-  debug "eval: $entry_count rules in map"
+  # Load entire map in one jq call — array of {name, file, index}
+  local map_entries
+  map_entries=$(jq -c '.[]' "$MAP_FILE")
+  debug "eval: $(jq 'length' "$MAP_FILE") rules in map"
 
-  local i
-  for (( i=0; i<entry_count; i++ )); do
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
     local name file idx
-    name=$(jq -r ".[$i].name" "$MAP_FILE")
-    file=$(jq -r ".[$i].file" "$MAP_FILE")
-    idx=$(jq -r ".[$i].index" "$MAP_FILE")
+    name=$(printf '%s\n' "$entry" | jq -r '.name')
+    file=$(printf '%s\n' "$entry" | jq -r '.file')
+    idx=$(printf '%s\n' "$entry" | jq -r '.index')
 
     # Load rule from YAML and check event/matcher
     local rule
@@ -242,19 +210,17 @@ main() {
     [[ -z "$rule" ]] && continue
 
     local on_field
-    on_field=$(echo "$rule" | jq -r '.on // empty')
+    on_field=$(printf '%s\n' "$rule" | jq -r '.on // empty')
     [[ -z "$on_field" ]] && continue
 
     if _rule_matches "$on_field"; then
       debug "eval: evaluating rule '$name' from $file"
 
-      if _eval_rule "$rule" "$input"; then
-        :
-      else
+      if ! _eval_rule "$rule" "$input"; then
         exit 0
       fi
     fi
-  done
+  done <<< "$map_entries"
 
   exit 0
 }

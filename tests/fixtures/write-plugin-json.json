@@ -1,7 +1,0 @@
-{
-  "tool_name": "Write",
-  "tool_input": {
-    "file_path": "$HOME/project/plugin.json",
-    "content": "{}"
-  }
-}

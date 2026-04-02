@@ -71,6 +71,15 @@ prompt_event_ok() {
   esac
 }
 
+# ── YAML to JSON helper ──
+# Works with mikefarah/yq (Go). Outputs JSON from a YAML file.
+# Usage: _yq_json ".rules[0]" file.yaml
+
+_yq_json() {
+  local expr="$1" file="$2"
+  yq -o=json "$expr" "$file" 2>/dev/null
+}
+
 # ── Script path extraction ──
 # Extracts a .sh file path from a command string.
 # Used by convert.sh and anywhere else that needs to find the script in a command.
