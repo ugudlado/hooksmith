@@ -1,8 +1,5 @@
-# Script rule with hooklib — guards against force-killing processes
-id: script-rule
-event: PreToolUse
-matcher: Bash
-mechanism: script
-script: ~/.claude/hooks/process-kill-guard.sh
-result: deny
-fail_mode: closed
+rules:
+  - name: process-kill-guard
+    on: PreToolUse Bash
+    run: ~/.claude/hooks/process-kill-guard.sh
+    deny: true
