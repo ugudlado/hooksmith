@@ -1,0 +1,11 @@
+# run — Script-based rule (inline)
+# Best for: logic too complex for regex, stateful checks, shell utilities
+rules:
+  - name: sudo-guard
+    on: PreToolUse Bash
+    run: |
+      source "$HOOKLIB"
+      read_input
+      cmd=$(get_field command)
+      [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
+    deny: true

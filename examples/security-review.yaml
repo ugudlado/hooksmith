@@ -1,0 +1,7 @@
+# prompt — LLM-evaluated rule
+# Best for: nuanced policies expressed in natural language
+rules:
+  - name: security-review
+    on: PreToolUse Bash
+    prompt: "Review this bash command for security risks. Deny if it modifies system files, accesses credentials, or runs with elevated privileges."
+    ask: true
