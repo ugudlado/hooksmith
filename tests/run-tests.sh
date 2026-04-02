@@ -94,11 +94,16 @@ print_summary() {
 eval_setup() {
   EVAL_DIR=$(mktemp -d)
   mkdir -p "$EVAL_DIR/.hooksmith"
+  # Override MAP_FILE and USER_RULES_DIR so tests are fully isolated
+  export MAP_FILE="$EVAL_DIR/.hooksmith/.map.json"
+  export USER_RULES_DIR="$EVAL_DIR/.hooksmith/user-rules"
+  mkdir -p "$USER_RULES_DIR"
   trap 'rm -rf "$EVAL_DIR"' EXIT
 }
 
 eval_teardown() {
   rm -rf "$EVAL_DIR"
+  unset MAP_FILE USER_RULES_DIR
   trap - EXIT
 }
 
@@ -123,10 +128,10 @@ test_cli() {
   out=$(bash "$HOOKSMITH" 2>&1 || true)
   assert_contains "no args shows usage" "$out" "Commands:"
 
-  local tmp_hf
-  tmp_hf=$(mktemp)
-  out=$(OUTPUT="$tmp_hf" bash "$HOOKSMITH" init 2>/dev/null); exit_code=$?
-  rm -f "$tmp_hf"
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
+  out=$(MAP_FILE="$tmp_dir/.map.json" bash "$HOOKSMITH" init 2>/dev/null); exit_code=$?
+  rm -rf "$tmp_dir"
   assert_exit_ok "init exits 0" "$exit_code"
 }
 
@@ -668,7 +673,8 @@ YAML
   assert_denied "malformed: valid rule still fires despite invalid siblings" "$result"
   assert_contains "malformed: valid rule's reason" "$result" "Valid"
 
-  # Check debug output for warnings
+  # Check debug output for warnings (delete map to force rebuild)
+  rm -f "$MAP_FILE"
   local stderr_out
   stderr_out=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}' | \
     (cd "$EVAL_DIR" && HOOKSMITH_DEBUG=1 bash "$HOOKSMITH" eval 2>&1 >/dev/null))
@@ -723,7 +729,7 @@ YAML
 # ── SessionStart auto-init ──
 
 test_eval_session_start() {
-  echo "SessionStart auto-init"
+  echo "SessionStart map rebuild"
   eval_setup
 
   cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
@@ -738,18 +744,16 @@ rules:
     context: true
 YAML
 
-  # SessionStart should trigger init and generate hooks.json
-  local hf="$EVAL_DIR/hooks/hooks.json"
+  # SessionStart should rebuild the map (not generate hooks.json)
   echo '{"hook_event_name":"SessionStart"}' | \
-    (cd "$EVAL_DIR" && OUTPUT="$hf" bash "$HOOKSMITH" eval 2>/dev/null)
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null)
 
-  assert_exit_ok "session-start: hooks.json created" "$(test -f "$hf" && echo 0 || echo 1)"
+  assert_exit_ok "session-start: map rebuilt" "$(test -f "$MAP_FILE" && echo 0 || echo 1)"
 
-  local content
-  content=$(cat "$hf")
-  assert_contains "session-start: PreToolUse registered from rules" "$content" '"PreToolUse"'
-  assert_contains "session-start: Stop registered from rules" "$content" '"Stop"'
-  assert_contains "session-start: SessionStart always present" "$content" '"SessionStart"'
+  local map_count
+  map_count=$(jq 'length' "$MAP_FILE")
+  if [[ "$map_count" -eq 2 ]]; then _pass "session-start: map has 2 rules"
+  else _fail "session-start: map has 2 rules" "got $map_count"; fi
 
   eval_teardown
 }
@@ -769,16 +773,18 @@ rules:
     deny: "test"
 YAML
 
-  local out hf="$EVAL_DIR/hooks/hooks.json"
-  out=$(cd "$EVAL_DIR" && OUTPUT="$hf" bash "$HOOKSMITH" init 2>&1)
-  assert_contains "init generates output" "$out" "Generated"
+  local out
+  out=$(cd "$EVAL_DIR" && bash "$HOOKSMITH" init 2>&1)
+  assert_contains "init: map rebuilt" "$out" "Map rebuilt"
+  assert_contains "init: shows events" "$out" "PreToolUse"
+  assert_contains "init: shows rule count" "$out" "1 indexed"
+  assert_contains "init: runs diagnostics" "$out" "Diagnostics"
 
-  local content
-  content=$(cat "$hf")
-  assert_contains "init: hooks key" "$content" '"hooks"'
-  assert_contains "init: PreToolUse from rules" "$content" '"PreToolUse"'
-  assert_contains "init: SessionStart always registered" "$content" '"SessionStart"'
-  assert_contains "init: hooksmith eval command" "$content" "hooksmith eval"
+  assert_exit_ok "init: map file created" "$(test -f "$MAP_FILE" && echo 0 || echo 1)"
+  local map_count
+  map_count=$(jq 'length' "$MAP_FILE")
+  if [[ "$map_count" -eq 1 ]]; then _pass "init: map has 1 rule"
+  else _fail "init: map has 1 rule" "got $map_count"; fi
 
   eval_teardown
 }
