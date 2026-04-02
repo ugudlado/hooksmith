@@ -5,7 +5,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../core/config.sh"
-source "${SCRIPT_DIR}/../core/parse.sh"
+source "${SCRIPT_DIR}/../core/map.sh"
 
 USER_RULES_DIR="$HOOKSMITH_USER_RULES_DIR"
 PROJECT_RULES_DIR="$HOOKSMITH_PROJECT_RULES_DIR"
@@ -23,77 +23,137 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Use a delimiter that never appears in field values
 SEP=$'\x01'
 
-# ── Collect rule files with scope ──
+# ── Determine scope of a rule file ──
 
-collect_rules_with_scope() {
-  local seen_files=""
+_file_scope() {
+  local file="$1"
+  case "$file" in
+    "$HOME"/.config/hooksmith/*|"$HOOKSMITH_USER_RULES_DIR"/*) echo "user" ;;
+    *) echo "project" ;;
+  esac
+}
 
-  if [[ "$SCOPE" == "project" || "$SCOPE" == "all" ]]; then
-    if [[ -d "$PROJECT_RULES_DIR" ]]; then
-      for f in "$PROJECT_RULES_DIR"/*.yaml; do
-        [[ -f "$f" ]] || continue
-        local name; name=$(basename "$f")
-        seen_files="$seen_files $name"
-        echo "project${SEP}${f}"
-      done
+# ── Detect action type from a rule JSON ──
+
+_detect_action() {
+  local rule="$1"
+  for a in deny ask context; do
+    local val
+    val=$(printf '%s\n' "$rule" | jq -r "if has(\"$a\") then \"$a\" else empty end")
+    if [[ -n "$val" ]]; then
+      echo "$a"
+      return
     fi
-  fi
+  done
+  echo "—"
+}
 
-  if [[ "$SCOPE" == "user" || "$SCOPE" == "all" ]]; then
-    if [[ -d "$USER_RULES_DIR" ]]; then
-      for f in "$USER_RULES_DIR"/*.yaml; do
-        [[ -f "$f" ]] || continue
-        local name; name=$(basename "$f")
-        # Skip if project already has this file (project overrides user)
-        if [[ "$SCOPE" == "all" && " $seen_files " == *" $name "* ]]; then
-          continue
-        fi
-        echo "user${SEP}${f}"
-      done
-    fi
+# ── Detect mechanism from a rule JSON ──
+
+_detect_mechanism() {
+  local rule="$1"
+  local has_match has_run
+  has_match=$(printf '%s\n' "$rule" | jq -r '.match // empty')
+  has_run=$(printf '%s\n' "$rule" | jq -r '.run // empty')
+  if [[ -n "$has_match" ]]; then
+    echo "match"
+  elif [[ -n "$has_run" ]]; then
+    echo "run"
+  else
+    echo "—"
   fi
 }
 
 # ── Main ──
 
 main() {
+  _ensure_map
+
   local rules_data=()
   local user_count=0 project_count=0 disabled_count=0
 
-  while IFS="$SEP" read -r scope file; do
-    local parsed; parsed=$(parse_yaml "$file" 2>/dev/null)
-    local rule_id event matcher mechanism result fail_mode enabled
-    rule_id=$(get_val "$parsed" "id")
-    event=$(get_val "$parsed" "event")
-    matcher=$(get_val "$parsed" "matcher")
-    mechanism=$(get_val "$parsed" "mechanism")
-    result=$(get_val "$parsed" "result")
-    fail_mode=$(get_val "$parsed" "fail_mode")
-    enabled=$(get_val "$parsed" "enabled")
+  local entry_count
+  entry_count=$(jq 'length' "$MAP_FILE")
 
-    [[ -z "$fail_mode" ]] && fail_mode="$HOOKSMITH_DEFAULT_FAIL_MODE"
-    [[ -z "$enabled" ]] && enabled="$HOOKSMITH_DEFAULT_ENABLED"
+  local i
+  for (( i=0; i<entry_count; i++ )); do
+    local name file idx
+    name=$(jq -r ".[$i].name" "$MAP_FILE")
+    file=$(jq -r ".[$i].file" "$MAP_FILE")
+    idx=$(jq -r ".[$i].index" "$MAP_FILE")
+
+    local scope
+    scope=$(_file_scope "$file")
+
+    # Filter by scope
+    if [[ "$SCOPE" != "all" && "$scope" != "$SCOPE" ]]; then
+      continue
+    fi
+
+    local rule
+    rule=$(_yq_json ".rules[$idx]" "$file" | jq -c '.' 2>/dev/null)
+    [[ -z "$rule" ]] && continue
+
+    local on_field event matcher action mechanism
+    on_field=$(printf '%s\n' "$rule" | jq -r '.on // empty')
+    on_field=$(echo "$on_field" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
+    event="${on_field%% *}"
+    matcher="${on_field#"$event"}"
+    matcher="${matcher# }"
+
+    action=$(_detect_action "$rule")
+    mechanism=$(_detect_mechanism "$rule")
 
     local display_file="$file"
     display_file="${display_file/#$HOME/~}"
 
-    if [[ -z "$rule_id" || -z "$event" || -z "$mechanism" ]]; then
-      rule_id="${rule_id:-$(basename "$file" .yaml)}"
-      rules_data+=("${scope}${SEP}${file}${SEP}${rule_id}${SEP}[error]${SEP}${SEP}[error]${SEP}${SEP}open${SEP}false${SEP}${display_file}")
-      if [[ "$scope" == "user" ]]; then user_count=$((user_count + 1)); fi
-      if [[ "$scope" == "project" ]]; then project_count=$((project_count + 1)); fi
-      continue
-    fi
-
-    rules_data+=("${scope}${SEP}${file}${SEP}${rule_id}${SEP}${event}${SEP}${matcher}${SEP}${mechanism}${SEP}${result}${SEP}${fail_mode}${SEP}${enabled}${SEP}${display_file}")
+    rules_data+=("${scope}${SEP}${file}${SEP}${name}${SEP}${event}${SEP}${matcher}${SEP}${mechanism}${SEP}${action}${SEP}${display_file}")
 
     if [[ "$scope" == "user" ]]; then user_count=$((user_count + 1)); fi
     if [[ "$scope" == "project" ]]; then project_count=$((project_count + 1)); fi
-    if [[ "$enabled" == "false" ]]; then disabled_count=$((disabled_count + 1)); fi
-  done < <(collect_rules_with_scope)
+  done
+
+  # Also scan for disabled rules (not in map)
+  while IFS= read -r rule_file; do
+    [[ -z "$rule_file" ]] && continue
+    local rule_count
+    rule_count=$(yq -o=json '.rules | length' "$rule_file" 2>/dev/null)
+    [[ -z "$rule_count" || "$rule_count" == "0" ]] && continue
+
+    local j
+    for (( j=0; j<rule_count; j++ )); do
+      local rule_json enabled
+      rule_json=$(_yq_json ".rules[$j]" "$rule_file")
+      enabled=$(printf '%s\n' "$rule_json" | jq -r 'if has("enabled") then .enabled | tostring else empty end')
+      [[ "$enabled" != "false" ]] && continue
+
+      local dname scope
+      dname=$(printf '%s\n' "$rule_json" | jq -r '.name // "rule-'"$((j+1))"'"')
+      scope=$(_file_scope "$rule_file")
+
+      [[ "$SCOPE" != "all" && "$scope" != "$SCOPE" ]] && continue
+
+      local rule
+      rule=$(printf '%s\n' "$rule_json" | jq -c '.')
+      local on_field event matcher action mechanism
+      on_field=$(printf '%s\n' "$rule" | jq -r '.on // empty')
+      on_field=$(echo "$on_field" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
+      event="${on_field%% *}"
+      matcher="${on_field#"$event"}"
+      matcher="${matcher# }"
+      action=$(_detect_action "$rule")
+      mechanism=$(_detect_mechanism "$rule")
+
+      local display_file="${rule_file/#$HOME/~}"
+      rules_data+=("${scope}${SEP}${rule_file}${SEP}${dname}${SEP}${event}${SEP}${matcher}${SEP}${mechanism}${SEP}${action}${SEP}${display_file}${SEP}disabled")
+
+      disabled_count=$((disabled_count + 1))
+      if [[ "$scope" == "user" ]]; then user_count=$((user_count + 1)); fi
+      if [[ "$scope" == "project" ]]; then project_count=$((project_count + 1)); fi
+    done
+  done < <(_rule_files)
 
   local total=${#rules_data[@]}
 
@@ -102,43 +162,41 @@ main() {
     exit 0
   fi
 
-  # Sort by event then id (fields 4 and 3 in SEP-delimited record)
+  # Sort by event then name
   IFS=$'\n' rules_data=($(printf '%s\n' "${rules_data[@]}" | sort -t"$SEP" -k4,4 -k3,3)); unset IFS
 
   if [[ "$OUTPUT_JSON" == "true" ]]; then
     local first=true
     echo "["
     for entry in "${rules_data[@]}"; do
-      IFS="$SEP" read -r scope file rule_id event matcher mechanism result fail_mode enabled display_file <<< "$entry"
-      local enabled_bool
-      [[ "$enabled" == "true" ]] && enabled_bool=true || enabled_bool=false
+      IFS="$SEP" read -r scope file name event matcher mechanism action display_file disabled_flag <<< "$entry"
+      local enabled_bool=true
+      [[ "$disabled_flag" == "disabled" ]] && enabled_bool=false
       [[ "$first" == "true" ]] && first=false || echo ","
       jq -n \
-        --arg id "$rule_id" \
+        --arg name "$name" \
         --arg event "$event" \
         --arg matcher "$matcher" \
         --arg mechanism "$mechanism" \
-        --arg result "$result" \
-        --arg fail_mode "$fail_mode" \
+        --arg action "$action" \
         --arg scope "$scope" \
         --argjson enabled "$enabled_bool" \
-        --arg file "${display_file/#$HOME/~}" \
-        '{id:$id,event:$event,matcher:$matcher,mechanism:$mechanism,result:$result,fail_mode:$fail_mode,scope:$scope,enabled:$enabled,file:$file}'
+        --arg file "$display_file" \
+        '{name:$name,event:$event,matcher:$matcher,mechanism:$mechanism,action:$action,scope:$scope,enabled:$enabled,file:$file}'
     done
     echo "]"
   else
     local sep="──────────────────────────────────────────────────────────────────────────────────────"
     echo "HOOKSMITH RULES"
     echo "$sep"
-    printf "%-28s %-18s %-14s %-8s %-8s %s\n" "ID" "EVENT" "MATCHER" "MECH" "RESULT" "SCOPE"
+    printf "%-28s %-18s %-14s %-8s %-8s %s\n" "NAME" "EVENT" "MATCHER" "TYPE" "ACTION" "SCOPE"
     echo "$sep"
     for entry in "${rules_data[@]}"; do
-      IFS="$SEP" read -r scope file rule_id event matcher mechanism result fail_mode enabled display_file <<< "$entry"
+      IFS="$SEP" read -r scope file name event matcher mechanism action display_file disabled_flag <<< "$entry"
       [[ -z "$matcher" ]] && matcher="—"
       local suffix=""
-      [[ "$enabled" == "false" ]] && suffix=" [disabled]"
-      [[ "$event" == "[error]" ]] && suffix=" [error]"
-      printf "%-28s %-18s %-14s %-8s %-8s %s%s\n" "$rule_id" "$event" "$matcher" "$mechanism" "$result" "$scope" "$suffix"
+      [[ "$disabled_flag" == "disabled" ]] && suffix=" [disabled]"
+      printf "%-28s %-18s %-14s %-8s %-8s %s%s\n" "$name" "$event" "$matcher" "$mechanism" "$action" "$scope" "$suffix"
     done
     echo "$sep"
     local summary="${total} rules (${user_count} user, ${project_count} project)"

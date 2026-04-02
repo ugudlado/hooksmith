@@ -1,58 +1,47 @@
 #!/bin/bash
 # init.sh — Generates hooks.json routing table for hooksmith eval.
-# No compilation. Just registers which events hooksmith should handle.
+# Scans all rules to find which events are used, then registers exactly
+# those events (plus SessionStart for auto-init on next session).
 #
-# Usage: hooksmith init [--events EVENT1,EVENT2,...] [--output FILE]
+# Usage: hooksmith init
 #
-# Default: registers PreToolUse, PostToolUse, UserPromptSubmit, Stop.
-# The generated hooks.json simply routes all events to `hooksmith eval`.
+# No flags needed. Run manually or let eval.sh call it on SessionStart.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 OUTPUT="${OUTPUT:-${PLUGIN_ROOT}/hooks/hooks.json}"
 
-# ── Default events to register ──
-DEFAULT_EVENTS="PreToolUse,PostToolUse,UserPromptSubmit,Stop"
-EVENTS=""
+source "${SCRIPT_DIR}/../core/config.sh"
+source "${SCRIPT_DIR}/../core/map.sh"
 
-# ── Parse args ──
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --events)  EVENTS="$2"; shift 2 ;;
-    --output)  OUTPUT="$2"; shift 2 ;;
-    -h|--help)
-      echo "Usage: hooksmith init [--events EVENT1,EVENT2,...] [--output FILE]"
-      echo ""
-      echo "Generates a static hooks.json that routes events to hooksmith eval."
-      echo "No compilation needed — rules in hooksmith.yaml are evaluated live."
-      echo ""
-      echo "Options:"
-      echo "  --events   Comma-separated events to register (default: $DEFAULT_EVENTS)"
-      echo "  --output   Output file (default: hooks/hooks.json)"
-      echo ""
-      echo "Available events:"
-      echo "  PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest,"
-      echo "  Stop, StopFailure, UserPromptSubmit, SessionStart, SessionEnd,"
-      echo "  SubagentStart, SubagentStop, TeammateIdle, TaskCompleted,"
-      echo "  Notification, PreCompact, PostCompact, ConfigChange,"
-      echo "  InstructionsLoaded, WorktreeCreate, WorktreeRemove,"
-      echo "  Elicitation, ElicitationResult"
-      exit 0
-      ;;
-    *) echo "Unknown option: $1" >&2; exit 1 ;;
-  esac
-done
+# ── Build map first (ensures it's fresh) ──
+_build_map
+map_count=$(jq 'length' "$MAP_FILE")
 
-[[ -z "$EVENTS" ]] && EVENTS="$DEFAULT_EVENTS"
+# ── Collect events from all rules ──
+# Always include SessionStart so eval can auto-init on next session.
+declare -A events
+events[SessionStart]=1
+
+while IFS= read -r rule_file; do
+  [[ -z "$rule_file" ]] && continue
+  local_count=$(_yq_json '.rules | length' "$rule_file")
+  [[ -z "$local_count" || "$local_count" == "0" ]] && continue
+
+  for (( i=0; i<local_count; i++ )); do
+    on_field=$(_yq_json ".rules[$i].on" "$rule_file" | jq -r '. // empty' 2>/dev/null)
+    [[ -z "$on_field" ]] && continue
+    # Event is the first word
+    event="${on_field%% *}"
+    events["$event"]=1
+  done
+done < <(_rule_files)
 
 # ── Build hooks.json ──
-
 hooks_json='{"hooks":{}}'
 
-IFS=',' read -ra event_list <<< "$EVENTS"
-for event in "${event_list[@]}"; do
-  event=$(echo "$event" | tr -d ' ')  # trim whitespace
+for event in "${!events[@]}"; do
   hooks_json=$(echo "$hooks_json" | jq --arg e "$event" \
     '.hooks[$e] = [{"hooks":[{"type":"command","command":"bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval","timeout":10}]}]')
 done
@@ -61,47 +50,12 @@ done
 mkdir -p "$(dirname "$OUTPUT")"
 echo "$hooks_json" | jq '.' > "$OUTPUT"
 
-# ── Build rule map for fast lookups ──
-source "${SCRIPT_DIR}/../core/config.sh"
-MAP_FILE=".hooksmith/.map.json"
+event_list=$(printf '%s\n' "${!events[@]}" | sort | tr '\n' ',' | sed 's/,$//')
+debug "init: generated $OUTPUT with events: $event_list ($map_count rules)"
 
-# Reuse _rule_files and _build_map logic inline
-_init_rule_files() {
-  local dirs=(".hooksmith" "$HOME/.config/hooksmith")
-  for dir in "${dirs[@]}"; do
-    [[ -f "$dir/hooksmith.yaml" ]] && echo "$dir/hooksmith.yaml"
-    if [[ -d "$dir/rules" ]]; then
-      for f in "$dir/rules"/*.yaml; do [[ -f "$f" ]] && echo "$f"; done
-      for sub in "$dir/rules"/*/; do
-        [[ -d "$sub" ]] || continue
-        for f in "$sub"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
-      done
-    fi
-  done
-}
-
-map_json="[]"
-while IFS= read -r rule_file; do
-  [[ -z "$rule_file" ]] && continue
-  rc=$(yq '.rules | length' "$rule_file" 2>/dev/null)
-  [[ -z "$rc" || "$rc" == "0" ]] && continue
-  for (( i=0; i<rc; i++ )); do
-    name=$(yq -r ".rules[$i].name // \"rule-$((i+1))\"" "$rule_file" 2>/dev/null)
-    enabled=$(yq -r "if .rules[$i] | has(\"enabled\") then .rules[$i].enabled | tostring else empty end" "$rule_file" 2>/dev/null)
-    [[ "$enabled" == "false" ]] && continue
-    map_json=$(echo "$map_json" | jq -c \
-      --arg name "$name" --arg file "$rule_file" --argjson idx "$i" \
-      '. + [{name:$name, file:$file, index:$idx}]')
-  done
-done < <(_init_rule_files)
-
-mkdir -p "$(dirname "$MAP_FILE")"
-echo "$map_json" | jq '.' > "$MAP_FILE"
-map_count=$(echo "$map_json" | jq 'length')
-
-echo "Generated $OUTPUT"
-echo "Events registered: ${EVENTS}"
-echo "Rule map: $MAP_FILE ($map_count rules indexed)"
-echo ""
-echo "Edit rules in .hooksmith/hooksmith.yaml or ~/.config/hooksmith/hooksmith.yaml"
-echo "Map auto-rebuilds when rule files change."
+# Only print to stdout when run directly (not from eval.sh)
+if [[ "${HOOKSMITH_SILENT_INIT:-}" != "1" ]]; then
+  echo "Generated $OUTPUT"
+  echo "Events: $event_list"
+  echo "Rules: $map_count indexed"
+fi
