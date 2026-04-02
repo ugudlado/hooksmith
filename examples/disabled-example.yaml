@@ -1,10 +1,7 @@
-# Example of a disabled rule — excluded from build
-id: disabled-example
-event: PreToolUse
-matcher: Bash
-mechanism: regex
-field: command
-pattern: 'echo hello'
-result: warn
-message: "This rule is disabled."
-enabled: false
+# Any rule type can be disabled without removing it
+rules:
+  - name: disabled-example
+    on: PreToolUse Bash
+    match: command =~ echo hello
+    context: "This rule is disabled and won't fire."
+    enabled: false

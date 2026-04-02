@@ -1,9 +1,7 @@
-# Block destructive rm commands targeting system or home directories
-id: block-rm
-event: PreToolUse
-matcher: Bash
-mechanism: regex
-field: command
-pattern: 'rm[[:space:]]+-rf[[:space:]]+(/|~|\$HOME)'
-result: deny
-message: "Blocked: destructive rm targeting system or home directory."
+# match — Pattern-based rule
+# Best for: simple field matching with regex, zero overhead
+rules:
+  - name: block-rm
+    on: PreToolUse Bash
+    match: command =~ rm[[:space:]]+-rf[[:space:]]+(/|~|\$HOME)
+    deny: "Blocked: destructive rm targeting system or home directory."
