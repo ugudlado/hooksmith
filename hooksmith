@@ -11,9 +11,10 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")" && pwd)"
 case "${1:-}" in
   eval)    shift; exec bash "${PLUGIN_ROOT}/lib/eval.sh" "$@" ;;
   init)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/init.sh" "$@" ;;
+  doctor)  shift; exec bash "${PLUGIN_ROOT}/lib/cli/init.sh" "$@" ;;
   list)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/list.sh" "$@" ;;
   convert) shift; exec bash "${PLUGIN_ROOT}/lib/cli/convert.sh" "$@" ;;
   *)       echo "hooksmith: unknown command '${1:-}'" >&2
-           echo "Commands: eval, init, list, convert" >&2
+           echo "Commands: eval, init, doctor, list, convert" >&2
            exit 1 ;;
 esac

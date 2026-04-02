@@ -1,26 +1,79 @@
 #!/bin/bash
-# init.sh — Generates hooks.json routing table for hooksmith eval.
-# Scans all rules to find which events are used, then registers exactly
-# those events (plus SessionStart for auto-init on next session).
+# init.sh — Rebuilds the hooksmith rule map and runs diagnostics.
+#
+# hooks.json is pre-registered with all events (static file in hooks/).
+# This script rebuilds the map index and checks for common issues.
 #
 # Usage: hooksmith init
-#
-# No flags needed. Run manually or let eval.sh call it on SessionStart.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
-OUTPUT="${OUTPUT:-${PLUGIN_ROOT}/hooks/hooks.json}"
 
 source "${SCRIPT_DIR}/../core/config.sh"
 source "${SCRIPT_DIR}/../core/map.sh"
 
-# ── Build map first (ensures it's fresh) ──
+# ── Diagnostics ──
+
+_doctor() {
+  local warnings=0
+
+  # Check for v1 format rules (id/event/mechanism instead of rules/name/on)
+  while IFS= read -r rule_file; do
+    [[ -z "$rule_file" ]] && continue
+    local has_v1_fields
+    has_v1_fields=$(yq -o=json '.' "$rule_file" 2>/dev/null | jq -r 'if (has("id") or has("event") or has("mechanism")) then "v1" else empty end' 2>/dev/null)
+    if [[ "$has_v1_fields" == "v1" ]]; then
+      echo "  ⚠ v1 format: ${rule_file/#$HOME/~}"
+      echo "    Expected v2 format with rules: array, name:, on:, match/run/prompt"
+      warnings=$((warnings + 1))
+    fi
+  done < <(_rule_files)
+
+  # Check for missing script files referenced by rules
+  while IFS= read -r rule_file; do
+    [[ -z "$rule_file" ]] && continue
+    local rule_count
+    rule_count=$(_yq_json '.rules | length' "$rule_file")
+    [[ -z "$rule_count" || "$rule_count" == "0" ]] && continue
+
+    for (( i=0; i<rule_count; i++ )); do
+      local run_field name
+      run_field=$(_yq_json ".rules[$i].run" "$rule_file" | jq -r '. // empty' 2>/dev/null)
+      name=$(_yq_json ".rules[$i].name" "$rule_file" | jq -r '. // empty' 2>/dev/null)
+      [[ -z "$run_field" ]] && continue
+
+      # Only check file references (paths with / or ~), not inline scripts
+      if [[ "$run_field" == */* || "$run_field" == ~* ]]; then
+        local resolved
+        resolved=$(expand_tilde "$run_field")
+        if [[ ! -f "$resolved" ]]; then
+          echo "  ⚠ missing script: $name → ${run_field/#$HOME/~}"
+          warnings=$((warnings + 1))
+        fi
+      fi
+    done
+  done < <(_rule_files)
+
+  # Check for rules with no rule files at all
+  local file_count=0
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && file_count=$((file_count + 1))
+  done < <(_rule_files)
+
+  if [[ $file_count -eq 0 ]]; then
+    echo "  ⚠ no rule files found"
+    echo "    Create rules in ~/.config/hooksmith/rules/ or .hooksmith/rules/"
+    warnings=$((warnings + 1))
+  fi
+
+  echo "$warnings"
+}
+
+# ── Build map ──
 _build_map
 map_count=$(jq 'length' "$MAP_FILE")
 
-# ── Collect events from all rules ──
-# Always include SessionStart so eval can auto-init on next session.
+# ── Collect events for display ──
 declare -A events
 events[SessionStart]=1
 
@@ -32,30 +85,26 @@ while IFS= read -r rule_file; do
   for (( i=0; i<local_count; i++ )); do
     on_field=$(_yq_json ".rules[$i].on" "$rule_file" | jq -r '. // empty' 2>/dev/null)
     [[ -z "$on_field" ]] && continue
-    # Event is the first word
     event="${on_field%% *}"
     events["$event"]=1
   done
 done < <(_rule_files)
 
-# ── Build hooks.json ──
-hooks_json='{"hooks":{}}'
-
-for event in "${!events[@]}"; do
-  hooks_json=$(echo "$hooks_json" | jq --arg e "$event" \
-    '.hooks[$e] = [{"hooks":[{"type":"command","command":"bash ${CLAUDE_PLUGIN_ROOT}/hooksmith eval","timeout":10}]}]')
-done
-
-# ── Write ──
-mkdir -p "$(dirname "$OUTPUT")"
-echo "$hooks_json" | jq '.' > "$OUTPUT"
-
 event_list=$(printf '%s\n' "${!events[@]}" | sort | tr '\n' ',' | sed 's/,$//')
-debug "init: generated $OUTPUT with events: $event_list ($map_count rules)"
+debug "init: rebuilt map with $map_count rules, events in use: $event_list"
 
-# Only print to stdout when run directly (not from eval.sh)
+# ── Output ──
 if [[ "${HOOKSMITH_SILENT_INIT:-}" != "1" ]]; then
-  echo "Generated $OUTPUT"
-  echo "Events: $event_list"
+  echo "Map rebuilt: ${MAP_FILE/#$HOME/~}"
+  echo "Events in use: $event_list"
   echo "Rules: $map_count indexed"
+  echo ""
+  echo "Diagnostics"
+  echo "───────────"
+  warning_count=$(_doctor)
+  # Last line of _doctor output is the count
+  warning_count=$(echo "$warning_count" | tail -1)
+  if [[ "$warning_count" -eq 0 ]]; then
+    echo "  ✓ No issues found"
+  fi
 fi
