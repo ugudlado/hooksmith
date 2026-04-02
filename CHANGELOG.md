@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.1 — 2026-04-03
+
+! Fixed hooks.json being rewritten at runtime into the plugin cache, which Claude Code's sandbox blocks — all events are now pre-registered statically
+! Fixed MAP_FILE using a relative CWD path instead of ~/.config/hooksmith/.map.json
+! Fixed `hooksmith list` showing "—" for prompt rules instead of "prompt"
++ Added `hooksmith doctor` — checks for v1-format rules, missing scripts, and empty rule directories
+* SessionStart now rebuilds the map directly instead of shelling out to init.sh
+
 ## 2.0.0 — 2026-04-03
 
 + Rule map with O(1) lookups replaces the old build system
