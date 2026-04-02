@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.0 — 2026-04-03
+
++ Rule map with O(1) lookups replaces the old build system
++ Rules can live across multiple files, split between project and user scopes
++ Live evaluation, no compilation step
++ Inline check mechanism for writing hook logic directly in rules
++ Compact rule format
++ Four new example rules: code-style-advisor, port-scan-guard, security-review, sudo-guard
+* Core runtime uses map-based indexing
+* CLI routes through the map instead of parsed output
+* check and script merged into one "run" mechanism
+* Library reorganized; examples and tests updated
+! Hook output now matches the official Claude Code hooks spec
+- Build system removed
+- parse.sh removed
+
 ## 1.0.1 — 2026-03-24
 
 + Add Stop event hooks for workflow enforcement (AskUserQuestion gate, spec-first reinforcement)
