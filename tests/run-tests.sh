@@ -285,6 +285,56 @@ YAML
   eval_teardown
 }
 
+test_eval_run_self_formatting() {
+  echo "run scripts that emit their own JSON decision"
+  eval_setup
+
+  # Script that reads stdin and emits its own hookSpecificOutput JSON (like bash-safety-guard.sh)
+  cat > "$EVAL_DIR/self-format-guard.sh" << 'SCRIPT'
+INPUT=$(cat)
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+[[ -z "$COMMAND" ]] && exit 0
+if [[ "$COMMAND" =~ ^sudo ]]; then
+  jq -n --arg reason "BLOCKED: $COMMAND" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+fi
+exit 0
+SCRIPT
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << YAML
+rules:
+  - name: self-format-guard
+    on: PreToolUse Bash
+    run: $EVAL_DIR/self-format-guard.sh
+    deny: true
+YAML
+
+  local result
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "self-formatting script deny works" "$result"
+  assert_contains "self-formatting script passes through reason" "$result" "BLOCKED: sudo"
+
+  # Ensure no double-wrapping (reason should not contain nested JSON)
+  local reason
+  reason=$(echo "$result" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+  if [[ "$reason" == *"hookSpecificOutput"* ]]; then
+    _fail "self-formatting: no double-wrap" "reason contains nested JSON: $reason"
+  else
+    _pass "self-formatting: no double-wrap"
+  fi
+
+  result=$(eval_run "$FIXTURES/bash-safe.json" "PreToolUse" "Bash")
+  assert_allowed "self-formatting script pass-through works" "$result"
+
+  eval_teardown
+}
+
 # ── Matcher routing tests ──
 
 test_eval_routing() {
@@ -813,6 +863,8 @@ echo "───"
 test_eval_run_inline
 echo ""
 test_eval_run_file
+echo ""
+test_eval_run_self_formatting
 echo ""
 echo "prompt"
 echo "──────"

@@ -132,10 +132,15 @@ _eval_run() {
   fi
 
   local reason
-  HOOKLIB="${SCRIPT_DIR}/core/hooklib.sh" INPUT="$input" reason=$(eval "$script_content") || true
+  HOOKLIB="${SCRIPT_DIR}/core/hooklib.sh" INPUT="$input" reason=$(echo "$input" | eval "$script_content") || true
 
   if [[ -n "$reason" ]]; then
     debug "eval [$name]: script returned reason: $reason"
+    # If the script already emitted a full hooksmith decision JSON, pass it through
+    if echo "$reason" | jq -e '.hookSpecificOutput.permissionDecision' >/dev/null 2>&1; then
+      echo "$reason"
+      return 1
+    fi
     _emit_decision "$action" "$reason"
     return 1
   fi
