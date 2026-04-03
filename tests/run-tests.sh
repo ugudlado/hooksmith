@@ -26,7 +26,17 @@ _fail() {
 }
 
 _decision() {
-  echo "$1" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null
+  local d
+  # PreToolUse/PostToolUse format
+  d=$(echo "$1" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  if [[ -n "$d" ]]; then echo "$d"; return; fi
+  # Stop/SubagentStop/UserPromptSubmit format
+  d=$(echo "$1" | jq -r '.decision // empty' 2>/dev/null)
+  case "$d" in
+    block) echo "deny" ;;
+    approve) echo "allow" ;;
+    *) echo "$d" ;;
+  esac
 }
 
 assert_denied() {
@@ -55,6 +65,14 @@ assert_contains() {
   local label="$1" output="$2" pattern="$3"
   if echo "$output" | grep -q "$pattern"; then _pass "$label"
   else _fail "$label" "expected output to contain '$pattern'"; fi
+}
+
+assert_json() {
+  local label="$1" output="$2" jq_expr="$3" expected="$4"
+  local actual
+  actual=$(echo "$output" | jq -r "$jq_expr" 2>/dev/null)
+  if [[ "$actual" == "$expected" ]]; then _pass "$label"
+  else _fail "$label" "expected '$expected' at $jq_expr, got '$actual'"; fi
 }
 
 assert_exit_ok() {
@@ -808,6 +826,130 @@ YAML
   eval_teardown
 }
 
+# ── Event-specific JSON schemas ──
+
+test_event_schema_stop() {
+  echo "Stop event schema (decision/reason format)"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: stop-guard
+    on: Stop
+    match: stop_reason =~ end_turn
+    deny: "Must complete checklist before stopping"
+  - name: stop-context
+    on: Stop
+    match: stop_reason =~ assistant_initiated
+    context: "Remember to run tests"
+YAML
+
+  # deny on Stop → {decision: "block", reason: ...}
+  local result
+  result=$(eval_run "$FIXTURES/stop-event.json" "Stop")
+  assert_denied "stop: deny maps to block" "$result"
+  assert_json "stop: uses decision field" "$result" '.decision' 'block'
+  assert_json "stop: no hookSpecificOutput" "$result" '.hookSpecificOutput // "absent"' 'absent'
+  assert_contains "stop: reason present" "$result" "checklist"
+
+  # context on Stop → {decision: "approve", reason: ...}
+  result=$(echo '{"hook_event_name":"Stop","stop_reason":"assistant_initiated"}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_json "stop: context maps to approve" "$result" '.decision' 'approve'
+  assert_contains "stop: context message" "$result" "run tests"
+
+  eval_teardown
+}
+
+test_event_schema_user_prompt() {
+  echo "UserPromptSubmit event schema"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: prompt-block
+    on: UserPromptSubmit
+    match: user_prompt =~ delete.everything
+    deny: "Dangerous request blocked"
+  - name: prompt-context
+    on: UserPromptSubmit
+    match: user_prompt =~ help.me
+    context: "User needs assistance"
+YAML
+
+  # deny on UserPromptSubmit → {decision: "block", reason: ...}
+  local result
+  result=$(eval_run "$FIXTURES/user-prompt.json" "UserPromptSubmit")
+  assert_denied "userprompt: deny maps to block" "$result"
+  assert_json "userprompt: uses decision field" "$result" '.decision' 'block'
+  assert_contains "userprompt: reason present" "$result" "Dangerous request"
+
+  # context on UserPromptSubmit → {hookSpecificOutput: {hookEventName, additionalContext}}
+  result=$(echo '{"hook_event_name":"UserPromptSubmit","user_prompt":"help me please"}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_json "userprompt: context has hookEventName" "$result" '.hookSpecificOutput.hookEventName' 'UserPromptSubmit'
+  assert_json "userprompt: context has additionalContext" "$result" '.hookSpecificOutput.additionalContext' 'User needs assistance'
+
+  eval_teardown
+}
+
+test_event_schema_post_tool_use() {
+  echo "PostToolUse event schema"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: post-warn
+    on: PostToolUse Bash
+    match: command =~ npm.test
+    context: "Tests were run — review results"
+  - name: post-deny
+    on: PostToolUse Bash
+    match: command =~ rm.-rf
+    deny: "Destructive command detected"
+YAML
+
+  # context on PostToolUse → {hookSpecificOutput: {hookEventName, additionalContext}}
+  local result
+  result=$(eval_run "$FIXTURES/post-tool-use.json" "PostToolUse" "Bash")
+  assert_json "posttool: context has hookEventName" "$result" '.hookSpecificOutput.hookEventName' 'PostToolUse'
+  assert_contains "posttool: additionalContext present" "$result" "review results"
+
+  # deny on PostToolUse → hookSpecificOutput with permissionDecision
+  result=$(echo '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "posttool: deny works" "$result"
+  assert_json "posttool: deny has hookEventName" "$result" '.hookSpecificOutput.hookEventName' 'PostToolUse'
+
+  eval_teardown
+}
+
+test_event_schema_pretooluse() {
+  echo "PreToolUse event schema (backward compat)"
+  eval_setup
+
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: pre-deny
+    on: PreToolUse Bash
+    match: command =~ sudo
+    deny: "No sudo"
+YAML
+
+  local result
+  result=$(eval_run "$FIXTURES/bash-git-push.json" "PreToolUse" "Bash")
+  # safe command — no output
+  assert_allowed "pretool: safe command allowed" "$result"
+
+  result=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo reboot"}}' | \
+    (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "pretool: deny still uses hookSpecificOutput" "$result"
+  assert_json "pretool: has hookEventName" "$result" '.hookSpecificOutput.hookEventName' 'PreToolUse'
+  assert_json "pretool: permissionDecision is deny" "$result" '.hookSpecificOutput.permissionDecision' 'deny'
+
+  eval_teardown
+}
+
 # ── Init command ──
 
 test_init() {
@@ -887,6 +1029,16 @@ echo "───"
 test_eval_map_auto_rebuild
 echo ""
 test_eval_map_detects_deletion
+echo ""
+echo "event schemas"
+echo "─────────────"
+test_event_schema_stop
+echo ""
+test_event_schema_user_prompt
+echo ""
+test_event_schema_post_tool_use
+echo ""
+test_event_schema_pretooluse
 echo ""
 echo "edge cases"
 echo "──────────"

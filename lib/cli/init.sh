@@ -71,26 +71,14 @@ _doctor() {
 
 # ── Build map ──
 _build_map
-map_count=$(jq 'length' "$MAP_FILE")
+map_count=$(_map_rule_count)
 
-# ── Collect events for display ──
-declare -A events
-events[SessionStart]=1
-
-while IFS= read -r rule_file; do
-  [[ -z "$rule_file" ]] && continue
-  local_count=$(_yq_json '.rules | length' "$rule_file")
-  [[ -z "$local_count" || "$local_count" == "0" ]] && continue
-
-  for (( i=0; i<local_count; i++ )); do
-    on_field=$(_yq_json ".rules[$i].on" "$rule_file" | jq -r '. // empty' 2>/dev/null)
-    [[ -z "$on_field" ]] && continue
-    event="${on_field%% *}"
-    events["$event"]=1
-  done
-done < <(_rule_files)
-
-event_list=$(printf '%s\n' "${!events[@]}" | sort | tr '\n' ',' | sed 's/,$//')
+# ── Collect events from map keys ──
+event_list=$(jq -r 'keys | sort | join(",")' "$MAP_FILE")
+# Always include SessionStart
+if [[ "$event_list" != *SessionStart* ]]; then
+  event_list="SessionStart,$event_list"
+fi
 debug "init: rebuilt map with $map_count rules, events in use: $event_list"
 
 # ── Output ──

@@ -77,15 +77,14 @@ main() {
   local rules_data=()
   local user_count=0 project_count=0 disabled_count=0
 
-  local entry_count
-  entry_count=$(jq 'length' "$MAP_FILE")
+  # Flatten event-keyed map into entries with event context
+  # Use "-" as placeholder for empty matcher to avoid IFS tab collapsing
+  local all_entries
+  all_entries=$(jq -r 'to_entries[] | .key as $event | .value[] | [$event, .name, .file, (.matcher // "-" | if . == "" then "-" else . end), (.rule | tojson)] | join("\t")' "$MAP_FILE" 2>/dev/null)
 
-  local i
-  for (( i=0; i<entry_count; i++ )); do
-    local name file idx
-    name=$(jq -r ".[$i].name" "$MAP_FILE")
-    file=$(jq -r ".[$i].file" "$MAP_FILE")
-    idx=$(jq -r ".[$i].index" "$MAP_FILE")
+  while IFS=$'\t' read -r event name file matcher rule_json; do
+    [[ -z "$name" ]] && continue
+    [[ "$matcher" == "-" ]] && matcher=""
 
     local scope
     scope=$(_file_scope "$file")
@@ -95,19 +94,9 @@ main() {
       continue
     fi
 
-    local rule
-    rule=$(_yq_json ".rules[$idx]" "$file" | jq -c '.' 2>/dev/null)
-    [[ -z "$rule" ]] && continue
-
-    local on_field event matcher action mechanism
-    on_field=$(printf '%s\n' "$rule" | jq -r '.on // empty')
-    on_field=$(echo "$on_field" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
-    event="${on_field%% *}"
-    matcher="${on_field#"$event"}"
-    matcher="${matcher# }"
-
-    action=$(_detect_action "$rule")
-    mechanism=$(_detect_mechanism "$rule")
+    local action mechanism
+    action=$(_detect_action "$rule_json")
+    mechanism=$(_detect_mechanism "$rule_json")
 
     local display_file="$file"
     display_file="${display_file/#$HOME/~}"
@@ -116,7 +105,7 @@ main() {
 
     if [[ "$scope" == "user" ]]; then user_count=$((user_count + 1)); fi
     if [[ "$scope" == "project" ]]; then project_count=$((project_count + 1)); fi
-  done
+  done <<< "$all_entries"
 
   # Also scan for disabled rules (not in map)
   while IFS= read -r rule_file; do

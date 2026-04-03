@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm test"
+  },
+  "tool_result": "3 tests failed"
+}

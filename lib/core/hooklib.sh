@@ -3,19 +3,38 @@
 # Source this in your script: source "$HOOKLIB"
 
 deny() {
-  jq -n --arg r "${1:-Blocked by hook rule}" \
-    '{hookSpecificOutput:{permissionDecision:"deny",permissionDecisionReason:$r}}'
+  local msg="${1:-Blocked by hook rule}"
+  local event="${HOOK_EVENT:-PreToolUse}"
+  case "$event" in
+    Stop|SubagentStop|UserPromptSubmit)
+      jq -n --arg r "$msg" '{decision:"block",reason:$r}' ;;
+    PostToolUse)
+      jq -n --arg r "$msg" '{hookSpecificOutput:{hookEventName:"PostToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' ;;
+    *)
+      jq -n --arg r "$msg" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' ;;
+  esac
   exit 0
 }
 
 ask() {
   jq -n --arg r "${1:-Manual approval required}" \
-    '{hookSpecificOutput:{permissionDecision:"ask",permissionDecisionReason:$r}}'
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'
   exit 0
 }
 
 context() {
-  jq -n --arg c "$1" '{hookSpecificOutput:{permissionDecision:"allow",additionalContext:$c}}'
+  local msg="$1"
+  local event="${HOOK_EVENT:-PreToolUse}"
+  case "$event" in
+    Stop|SubagentStop)
+      jq -n --arg c "$msg" '{decision:"approve",reason:$c}' ;;
+    UserPromptSubmit)
+      jq -n --arg c "$msg" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$c}}' ;;
+    PostToolUse)
+      jq -n --arg c "$msg" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}' ;;
+    *)
+      jq -n --arg c "$msg" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$c}}' ;;
+  esac
   exit 0
 }
 

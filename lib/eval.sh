@@ -1,14 +1,10 @@
 #!/bin/bash
-# eval.sh — Rule evaluator with auto-indexing map for fast routing.
+# eval.sh — Rule evaluator with event-keyed map for fast routing.
 #
-# The map (.hooksmith/.map.json) is a lightweight index:
-#   [{"name":"block-rm","file":".hooksmith/rules/security/block-rm.yaml","index":0}]
+# The map (.hooksmith/.map.json) is an event-keyed index:
+#   {"PreToolUse":[{"name":"block-rm","file":"...","matcher":"Bash","rule":{...}}], ...}
 #
-# It only stores name, file path, and rule index.
-# The actual rule content stays in YAML — map is just for routing.
-# On eval, the map tells us which file+index to load, then we parse
-# only that one rule from YAML.
-#
+# Rules are cached in the map — no YAML parsing at eval time.
 # Map auto-rebuilds when any rule file is newer than .map.json.
 set -uo pipefail
 
@@ -17,80 +13,70 @@ source "${SCRIPT_DIR}/core/config.sh"
 source "${SCRIPT_DIR}/core/hooklib.sh"
 source "${SCRIPT_DIR}/core/map.sh"
 
-# ── Load a single rule from its YAML file by index ──
-
-_load_rule() {
-  local file="$1" idx="$2"
-  _yq_json ".rules[$idx]" "$file" | jq -c '.' 2>/dev/null
-}
-
 # ── Extract event + tool from stdin JSON ──
 
 _parse_context() {
   local json="$1"
-  HOOK_EVENT=$(echo "$json" | jq -r '.hook_event_name // empty')
-  TOOL_NAME=$(echo "$json" | jq -r '.tool_name // empty')
+  # Single jq call to extract both fields
+  local fields
+  fields=$(echo "$json" | jq -r '[.hook_event_name // "", .tool_name // ""] | join("\t")')
+  IFS=$'\t' read -r HOOK_EVENT TOOL_NAME <<< "$fields"
   debug "eval: event=$HOOK_EVENT tool=$TOOL_NAME"
 }
 
-# ── Check if a rule's "on" field matches the current event+tool ──
+# ── Check if a rule's matcher matches the current tool ──
 
-_rule_matches() {
-  local on_field="$1"
-  # Normalize whitespace: collapse runs, trim edges
-  on_field=$(echo "$on_field" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
-
-  local rule_event="${on_field%% *}"
-  local rule_matcher="${on_field#"$rule_event"}"
-  rule_matcher="${rule_matcher# }"
-
-  [[ "$rule_event" != "$HOOK_EVENT" ]] && return 1
-
-  if [[ -n "$rule_matcher" && -n "$TOOL_NAME" ]]; then
-    local re="^(${rule_matcher})$"
-    [[ "$TOOL_NAME" =~ $re ]] || return 1
-  fi
-
+_matcher_matches() {
+  local matcher="$1"
+  [[ -z "$matcher" ]] && return 0
+  [[ -z "$TOOL_NAME" ]] && return 0
+  local re="^(${matcher})$"
+  [[ "$TOOL_NAME" =~ $re ]] || return 1
   return 0
 }
 
-# ── Evaluate a single rule ──
+# ── Evaluate a single rule (all fields pre-extracted in one jq call) ──
 
 _eval_rule() {
   local rule="$1" input="$2"
 
-  local action="" message=""
-  for a in deny ask context; do
-    local val
-    val=$(printf '%s\n' "$rule" | jq -r "if has(\"$a\") then .$a | tostring else empty end")
-    if [[ -n "$val" ]]; then
-      action="$a"; message="$val"; break
-    fi
-  done
+  # Single jq call: extract action type, message, name, and mechanism type
+  local meta
+  meta=$(printf '%s\n' "$rule" | jq -r '{
+    action: (if has("deny") then "deny" elif has("ask") then "ask" elif has("context") then "context" else "" end),
+    message: (if has("deny") then (.deny|tostring) elif has("ask") then (.ask|tostring) elif has("context") then (.context|tostring) else "" end),
+    name: (.name // "unnamed"),
+    mech: (if has("match") then "match" elif has("run") then "run" elif has("prompt") then "prompt" else "" end)
+  } | "\(.action)\n\(.message)\n\(.name)\n\(.mech)"')
+
+  local action message name mech
+  { read -r action; read -r message; read -r name; read -r mech; } <<< "$meta"
   [[ -z "$action" ]] && return 0
 
-  # Fix bare "true" messages (e.g. deny: true) — generate a useful message
+  # Fix bare "true" messages (e.g. deny: true)
   if [[ "$message" == "true" ]]; then
-    local rule_name
-    rule_name=$(printf '%s\n' "$rule" | jq -r '.name // "unnamed"')
-    message="Blocked by rule: $rule_name"
-    debug "eval [$rule_name]: action '$action' had bare 'true', using generated message"
+    message="Blocked by rule: $name"
+    debug "eval [$name]: action '$action' had bare 'true', using generated message"
   fi
 
-  local match_field run_field prompt_field
-  match_field=$(printf '%s\n' "$rule" | jq -r '.match // empty')
-  run_field=$(printf '%s\n' "$rule" | jq -r '.run // empty')
-  prompt_field=$(printf '%s\n' "$rule" | jq -r '.prompt // empty')
-  local name
-  name=$(printf '%s\n' "$rule" | jq -r '.name // "unnamed"')
-
-  if [[ -n "$match_field" ]]; then
-    _eval_match "$name" "$match_field" "$message" "$action" "$input"
-  elif [[ -n "$run_field" ]]; then
-    _eval_run "$name" "$run_field" "$action" "$input"
-  elif [[ -n "$prompt_field" ]]; then
-    _eval_prompt "$name" "$prompt_field" "$action" "$input"
-  fi
+  # Extract the mechanism field value (may contain newlines for run/prompt)
+  case "$mech" in
+    match)
+      local match_field
+      match_field=$(printf '%s\n' "$rule" | jq -r '.match // empty')
+      _eval_match "$name" "$match_field" "$message" "$action" "$input"
+      ;;
+    run)
+      local run_field
+      run_field=$(printf '%s\n' "$rule" | jq -r '.run // empty')
+      _eval_run "$name" "$run_field" "$action" "$input"
+      ;;
+    prompt)
+      local prompt_field
+      prompt_field=$(printf '%s\n' "$rule" | jq -r '.prompt // empty')
+      _eval_prompt "$name" "$prompt_field" "$action" "$input"
+      ;;
+  esac
 }
 
 _eval_match() {
@@ -137,7 +123,7 @@ _eval_run() {
   if [[ -n "$reason" ]]; then
     debug "eval [$name]: script returned reason: $reason"
     # If the script already emitted a full hooksmith decision JSON, pass it through
-    if echo "$reason" | jq -e '.hookSpecificOutput.permissionDecision' >/dev/null 2>&1; then
+    if echo "$reason" | jq -e '.hookSpecificOutput.permissionDecision // .decision' >/dev/null 2>&1; then
       echo "$reason"
       return 1
     fi
@@ -165,13 +151,32 @@ $tool_input"
 
 _emit_decision() {
   local action="$1" message="$2"
-  case "$action" in
-    deny)
-      jq -n --arg r "$message" '{hookSpecificOutput:{permissionDecision:"deny",permissionDecisionReason:$r}}' ;;
-    ask)
-      jq -n --arg r "$message" '{hookSpecificOutput:{permissionDecision:"ask",permissionDecisionReason:$r}}' ;;
-    context)
-      jq -n --arg c "$message" '{hookSpecificOutput:{permissionDecision:"allow",additionalContext:$c}}' ;;
+  case "$HOOK_EVENT" in
+    Stop|SubagentStop)
+      case "$action" in
+        deny)    jq -n --arg r "$message" '{decision:"block",reason:$r}' ;;
+        context) jq -n --arg c "$message" '{decision:"approve",reason:$c}' ;;
+        *)       return 0 ;;
+      esac ;;
+    UserPromptSubmit)
+      case "$action" in
+        deny)    jq -n --arg r "$message" '{decision:"block",reason:$r}' ;;
+        context) jq -n --arg c "$message" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$c}}' ;;
+        *)       return 0 ;;
+      esac ;;
+    PostToolUse)
+      case "$action" in
+        deny)    jq -n --arg r "$message" '{hookSpecificOutput:{hookEventName:"PostToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' ;;
+        context) jq -n --arg c "$message" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}' ;;
+        *)       return 0 ;;
+      esac ;;
+    *)
+      # PreToolUse and all other events
+      case "$action" in
+        deny)    jq -n --arg r "$message" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' ;;
+        ask)     jq -n --arg r "$message" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}' ;;
+        context) jq -n --arg c "$message" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$c}}' ;;
+      esac ;;
   esac
 }
 
@@ -189,7 +194,6 @@ main() {
   fi
 
   # Auto-init on SessionStart: rebuild the map index
-  # hooks.json is pre-registered with all events — no runtime rewrite needed
   if [[ "$HOOK_EVENT" == "SessionStart" ]]; then
     debug "eval: SessionStart — rebuilding map"
     _build_map
@@ -198,35 +202,34 @@ main() {
 
   _ensure_map
 
-  # Load entire map in one jq call — array of {name, file, index}
-  local map_entries
-  map_entries=$(jq -c '.[]' "$MAP_FILE")
-  debug "eval: $(jq 'length' "$MAP_FILE") rules in map"
+  # Event-keyed lookup: only load rules for this event (single jq call)
+  local event_rules
+  event_rules=$(jq -c --arg e "$HOOK_EVENT" '.[$e] // [] | .[]' "$MAP_FILE")
+
+  [[ -z "$event_rules" ]] && exit 0
+  debug "eval: $(echo "$event_rules" | wc -l | tr -d ' ') rules for $HOOK_EVENT"
 
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
-    local name file idx
-    name=$(printf '%s\n' "$entry" | jq -r '.name')
-    file=$(printf '%s\n' "$entry" | jq -r '.file')
-    idx=$(printf '%s\n' "$entry" | jq -r '.index')
 
-    # Load rule from YAML and check event/matcher
-    local rule
-    rule=$(_load_rule "$file" "$idx")
-    [[ -z "$rule" ]] && continue
-
-    local on_field
-    on_field=$(printf '%s\n' "$rule" | jq -r '.on // empty')
-    [[ -z "$on_field" ]] && continue
-
-    if _rule_matches "$on_field"; then
-      debug "eval: evaluating rule '$name' from $file"
-
-      if ! _eval_rule "$rule" "$input"; then
-        exit 0
-      fi
+    # Pre-filter by matcher (stored in map, no rule load needed)
+    local matcher name
+    matcher=$(printf '%s\n' "$entry" | jq -r '.matcher')
+    if ! _matcher_matches "$matcher"; then
+      continue
     fi
-  done <<< "$map_entries"
+
+    name=$(printf '%s\n' "$entry" | jq -r '.name')
+    debug "eval: evaluating rule '$name'"
+
+    # Rule is cached in the map — no YAML load needed
+    local rule
+    rule=$(printf '%s\n' "$entry" | jq -c '.rule')
+
+    if ! _eval_rule "$rule" "$input"; then
+      exit 0
+    fi
+  done <<< "$event_rules"
 
   exit 0
 }
