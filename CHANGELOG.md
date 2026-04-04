@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.2 — 2026-04-04
+
++ Scripts can now emit their own JSON decisions, bypassing hooksmith's wrapper
+* Eval outputs the correct JSON schema per event type (Stop, UserPromptSubmit, PostToolUse each get their own format)
+* Rule lookup switched to event-keyed map — roughly 4-7x faster on a typical ruleset
+! Stop and SubagentStop hooks were emitting PreToolUse-shaped JSON, which Claude Code rejected
+! UserPromptSubmit context output was missing the hookEventName field
+
 ## 2.0.1 — 2026-04-03
 
 ! Fixed hooks.json being rewritten at runtime into the plugin cache, which Claude Code's sandbox blocks — all events are now pre-registered statically
