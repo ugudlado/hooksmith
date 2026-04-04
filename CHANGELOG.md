@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.3 — 2026-04-04
+
+! Map file init now falls back to TMPDIR when the config directory isn't writable
+* Temp files created in the same directory as MAP_FILE instead of a random system location
+
 ## 2.0.2 — 2026-04-04
 
 + Scripts can now emit their own JSON decisions, bypassing hooksmith's wrapper
