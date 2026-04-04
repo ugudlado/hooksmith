@@ -8,7 +8,15 @@
 #
 # Requires: config.sh must be sourced first (for debug and _yq_json).
 
-MAP_FILE="${MAP_FILE:-$HOME/.config/hooksmith/.map.json}"
+_default_map_dir="$HOME/.config/hooksmith"
+if [[ -z "${MAP_FILE:-}" ]]; then
+  mkdir -p "$_default_map_dir" 2>/dev/null
+  if touch "$_default_map_dir/.map.json" 2>/dev/null; then
+    MAP_FILE="$_default_map_dir/.map.json"
+  else
+    MAP_FILE="${TMPDIR:-/tmp}/.hooksmith-map.json"
+  fi
+fi
 
 # ── Collect all rule files ──
 
@@ -53,7 +61,7 @@ _map_is_fresh() {
 _build_map() {
   debug "map: rebuilding $MAP_FILE"
   local tmp_entries
-  tmp_entries=$(mktemp)
+  tmp_entries=$(mktemp "${TMPDIR:-${MAP_FILE%/*}}/.map_build.XXXXXX")
   trap "rm -f '$tmp_entries'" RETURN
 
   while IFS= read -r rule_file; do
