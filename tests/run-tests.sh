@@ -5,7 +5,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURES="${REPO_ROOT}/tests/fixtures"
-HOOKSMITH="${REPO_ROOT}/hooksmith"
+HOOKSMITH="${REPO_ROOT}/bin/hooksmith"
 
 # ── Test state ──
 PASS=0

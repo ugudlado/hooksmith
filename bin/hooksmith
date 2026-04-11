@@ -6,7 +6,7 @@
 #   hooksmith list [opts]        — List registered rules
 #   hooksmith convert [opts]     — Convert settings.json hooks to YAML rules
 
-PLUGIN_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 case "${1:-}" in
   eval)    shift; exec bash "${PLUGIN_ROOT}/lib/eval.sh" "$@" ;;
