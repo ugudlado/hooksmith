@@ -73,13 +73,18 @@ _map_is_fresh() {
 _file_source() {
   local file="$1"
   local abs_project abs_packs
-  abs_project=$(cd "${HOOKSMITH_PROJECT_RULES_DIR%/rules}" 2>/dev/null && pwd)
+  abs_project=$(cd "${HOOKSMITH_PROJECT_RULES_DIR%/hooks}" 2>/dev/null && pwd)
   abs_packs="${HOOKSMITH_PACKS_DIR}"
-  case "$file" in
-    "${abs_project}"/*|"${HOOKSMITH_PROJECT_RULES_DIR%/rules}"/*) echo "project" ;;
-    "$abs_packs"/*|"$HOOKSMITH_PACKS_DIR"/*) echo "pack" ;;
-    *) echo "user" ;;
-  esac
+  # Guard against empty abs_project matching everything via /*
+  if [[ -n "$abs_project" ]] && [[ "$file" == "${abs_project}"/* ]]; then
+    echo "project"
+  elif [[ "$file" == "${HOOKSMITH_PROJECT_RULES_DIR%/hooks}"/* ]]; then
+    echo "project"
+  elif [[ "$file" == "$abs_packs"/* || "$file" == "$HOOKSMITH_PACKS_DIR"/* ]]; then
+    echo "pack"
+  else
+    echo "user"
+  fi
 }
 
 _build_map() {
