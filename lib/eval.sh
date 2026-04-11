@@ -162,6 +162,8 @@ $tool_input"
 
 _emit_decision() {
   local action="$1" message="$2"
+  # Prefix all messages so the user knows hooksmith produced them
+  [[ "$message" != \[hooksmith* ]] && message="[hooksmith] $message"
   case "$HOOK_EVENT" in
     Stop|SubagentStop)
       case "$action" in

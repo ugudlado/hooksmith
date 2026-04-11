@@ -1,6 +1,6 @@
 {
   "name": "hooksmith",
-  "version": "2.0.3",
+  "version": "3.0.0",
   "description": "Declarative hook rules compiled to native Claude Code hooks. Define rules as YAML, build to hooks.json. Supports regex, script, and prompt mechanisms.",
   "author": {
     "name": "Mahesh"

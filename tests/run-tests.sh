@@ -889,7 +889,7 @@ YAML
   result=$(echo '{"hook_event_name":"UserPromptSubmit","user_prompt":"help me please"}' | \
     (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
   assert_json "userprompt: context has hookEventName" "$result" '.hookSpecificOutput.hookEventName' 'UserPromptSubmit'
-  assert_json "userprompt: context has additionalContext" "$result" '.hookSpecificOutput.additionalContext' 'User needs assistance'
+  assert_json "userprompt: context has additionalContext" "$result" '.hookSpecificOutput.additionalContext' '[hooksmith] User needs assistance'
 
   eval_teardown
 }

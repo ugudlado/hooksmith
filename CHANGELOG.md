@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0 — 2026-04-11
+
++ Pack system: install rule packs from git repos; project and user rules silently override pack rules by name
++ Pack CLI: install, update, remove, list — git-based distribution, origin tracked in .packinfo for updates
++ Starter pack included, with relative script path resolution working out of the box
++ Plugin format switched to bin-style — Claude Code adds bin/ to PATH, no wrapper needed
+* Renamed rules/ convention to hooks/ across all three tiers (project, user, pack)
+* Rewrote README: starter rules, updated architecture overview
+* Updated skill references, added production patterns to the hooksmith skill
+* Cleaned up SKILL.md to match skill-development standards
+
 ## 2.0.3 — 2026-04-04
 
 ! Map file init now falls back to TMPDIR when the config directory isn't writable
