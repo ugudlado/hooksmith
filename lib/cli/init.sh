@@ -62,7 +62,7 @@ _doctor() {
 
   if [[ $file_count -eq 0 ]]; then
     echo "  ⚠ no rule files found"
-    echo "    Create rules in ~/.config/hooksmith/rules/ or .hooksmith/rules/"
+    echo "    Create rules in ~/.config/hooksmith/hooks/ or .hooksmith/hooks/"
     warnings=$((warnings + 1))
   fi
 

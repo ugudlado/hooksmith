@@ -61,8 +61,8 @@ Examples:
 
 Rules are auto-discovered from two locations:
 
-- **Project scope**: `.hooksmith/rules/<name>.yaml` or `.hooksmith/hooksmith.yaml`
-- **User scope**: `~/.config/hooksmith/rules/<name>.yaml` or `~/.config/hooksmith/hooksmith.yaml`
+- **Project scope**: `.hooksmith/hooks/<name>.yaml` or `.hooksmith/hooksmith.yaml`
+- **User scope**: `~/.config/hooksmith/hooks/<name>.yaml` or `~/.config/hooksmith/hooksmith.yaml`
 
 No build step — drop a YAML file and it's live. The map auto-rebuilds when any rule file changes.
 
@@ -71,7 +71,7 @@ No build step — drop a YAML file and it's live. The map auto-rebuilds when any
 The map (`.hooksmith/.map.json`) is a lightweight routing index:
 
 ```json
-[{"name": "block-rm", "file": ".hooksmith/rules/security/block-rm.yaml", "index": 0}]
+[{"name": "block-rm", "file": ".hooksmith/hooks/security/block-rm.yaml", "index": 0}]
 ```
 
 It only stores name, file path, and rule array index. Actual rule content stays in YAML. The map auto-rebuilds when:
@@ -123,8 +123,8 @@ Once the user approves:
 
 1. **Write** the rule file:
    ```
-   ~/.config/hooksmith/rules/<name>.yaml     # user scope (default)
-   .hooksmith/rules/<name>.yaml              # project scope
+   ~/.config/hooksmith/hooks/<name>.yaml     # user scope (default)
+   .hooksmith/hooks/<name>.yaml              # project scope
    ```
 
 2. **Confirm** with `hooksmith list`.

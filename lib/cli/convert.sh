@@ -5,7 +5,7 @@
 # Default: dry-run mode — prints what would be generated without writing files.
 # --apply     Write YAML rule files to the output directory
 # --scope     Which settings.json to read: "user" (~/.claude/) or "project" (.claude/)
-# --output-dir  Override output directory (default: ~/.config/hooksmith/rules for user scope)
+# --output-dir  Override output directory (default: ~/.config/hooksmith/hooks for user scope)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --apply       Write YAML files (default: dry-run, just preview)"
       echo "  --scope       Source: 'user' (~/.claude/settings.json) or 'project' (.claude/settings.json)"
-      echo "  --output-dir  Output directory (default: ~/.config/hooksmith/rules for user, .hooksmith/rules for project)"
+      echo "  --output-dir  Output directory (default: ~/.config/hooksmith/hooks for user, .hooksmith/hooks for project)"
       echo ""
       echo "Hooks that are skipped:"
       echo "  - Plugin hooks (contain \${CLAUDE_PLUGIN_ROOT})"
@@ -50,11 +50,11 @@ done
 case "$SCOPE" in
   user)
     SETTINGS_FILE="$HOME/.claude/settings.json"
-    [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="$HOME/.config/hooksmith/rules"
+    [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="$HOME/.config/hooksmith/hooks"
     ;;
   project)
     SETTINGS_FILE=".claude/settings.json"
-    [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR=".hooksmith/rules"
+    [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR=".hooksmith/hooks"
     ;;
   *)
     echo "ERROR: --scope must be 'user' or 'project'" >&2

@@ -172,8 +172,8 @@ match: command =~ chmod[[:space:]]+777            # numeric permissions
 Create a project rule file with the same name and `enabled: false`:
 
 ```yaml
-# .hooksmith/rules/bash-safety-guard.yaml
-# Overrides ~/.config/hooksmith/rules/bash-safety-guard.yaml
+# .hooksmith/hooks/bash-safety-guard.yaml
+# Overrides ~/.config/hooksmith/hooks/bash-safety-guard.yaml
 rules:
   - name: bash-safety-guard
     on: PreToolUse Bash
