@@ -1,0 +1,6 @@
+rules:
+  # Track dev server processes started via bash (powers process-kill-guard)
+  - name: dev-server-register
+    on: PostToolUse Bash
+    run: scripts/dev-server-register.sh
+    context: true
