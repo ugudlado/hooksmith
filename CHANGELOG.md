@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.3 — 2026-04-11
+
++ Starter pack now includes dev-server-register and smart-notify rules
+
 ## 3.0.2 — 2026-04-11
 
 ! Fixed hook command execution by using ${CLAUDE_PLUGIN_ROOT} for reliable PATH resolution instead of relying on bare command names
