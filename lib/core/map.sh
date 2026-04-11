@@ -21,20 +21,32 @@ fi
 # ── Collect all rule files ──
 
 _rule_files() {
-  # Derive base dirs from config constants (strip /rules suffix if present)
-  local project_base="${HOOKSMITH_PROJECT_RULES_DIR%/rules}"
-  local user_base="${HOOKSMITH_USER_RULES_DIR%/rules}"
+  # Derive base dirs from config constants (strip /hooks suffix if present)
+  local project_base="${HOOKSMITH_PROJECT_RULES_DIR%/hooks}"
+  local user_base="${HOOKSMITH_USER_RULES_DIR%/hooks}"
   local dirs=("$project_base" "$user_base")
   for dir in "${dirs[@]}"; do
     [[ -f "$dir/hooksmith.yaml" ]] && echo "$dir/hooksmith.yaml"
-    if [[ -d "$dir/rules" ]]; then
-      for f in "$dir/rules"/*.yaml; do [[ -f "$f" ]] && echo "$f"; done
-      for sub in "$dir/rules"/*/; do
+    if [[ -d "$dir/hooks" ]]; then
+      for f in "$dir/hooks"/*.yaml; do [[ -f "$f" ]] && echo "$f"; done
+      for sub in "$dir/hooks"/*/; do
         [[ -d "$sub" ]] || continue
         for f in "$sub"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
       done
     fi
   done
+  # Packs: lowest priority tier — each subdirectory is a pack
+  if [[ -d "$HOOKSMITH_PACKS_DIR" ]]; then
+    for pack_dir in "$HOOKSMITH_PACKS_DIR"/*/; do
+      [[ -d "$pack_dir" ]] || continue
+      for f in "$pack_dir"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
+      for sub in "$pack_dir"*/; do
+        [[ -d "$sub" ]] || continue
+        [[ "$(basename "$sub")" == ".git" ]] && continue
+        for f in "$sub"*.yaml; do [[ -f "$f" ]] && echo "$f"; done
+      done
+    done
+  fi
 }
 
 # ── Check if map is fresh ──
@@ -58,6 +70,18 @@ _map_is_fresh() {
 
 # ── Build the map: event-keyed with cached rules ──
 
+_file_source() {
+  local file="$1"
+  local abs_project abs_packs
+  abs_project=$(cd "${HOOKSMITH_PROJECT_RULES_DIR%/rules}" 2>/dev/null && pwd)
+  abs_packs="${HOOKSMITH_PACKS_DIR}"
+  case "$file" in
+    "${abs_project}"/*|"${HOOKSMITH_PROJECT_RULES_DIR%/rules}"/*) echo "project" ;;
+    "$abs_packs"/*|"$HOOKSMITH_PACKS_DIR"/*) echo "pack" ;;
+    *) echo "user" ;;
+  esac
+}
+
 _build_map() {
   debug "map: rebuilding $MAP_FILE"
   local tmp_entries
@@ -69,6 +93,9 @@ _build_map() {
     local rule_count
     rule_count=$(_yq_json '.rules | length' "$rule_file")
     [[ -z "$rule_count" || "$rule_count" == "0" ]] && continue
+
+    local source
+    source=$(_file_source "$rule_file")
 
     local i
     for (( i=0; i<rule_count; i++ )); do
@@ -87,8 +114,6 @@ _build_map() {
 
       local name enabled on_field has_mechanism has_action
       { read -r name; read -r enabled; read -r on_field; read -r has_mechanism; read -r has_action; } <<< "$fields"
-
-      [[ "$enabled" == "false" ]] && continue
 
       if [[ -z "$name" ]]; then
         debug "map: WARNING $rule_file rules[$i]: missing 'name' field, skipping"
@@ -113,18 +138,31 @@ _build_map() {
       local matcher="${on_field#"$event"}"
       matcher="${matcher# }"
 
-      # Build map entry with event key, matcher, and cached rule
+      # Build map entry with source, enabled state, event key, matcher, and cached rule
       printf '%s\n' "$rule_json" | jq -c \
         --arg file "$rule_file" --argjson idx "$i" \
         --arg event "$event" --arg matcher "$matcher" \
-        '{event:$event, entry:{name:.name, file:$file, index:$idx, matcher:$matcher, rule:.}}' >> "$tmp_entries"
+        --arg source "$source" --arg enabled "$enabled" \
+        '{event:$event, entry:{name:.name, file:$file, index:$idx, matcher:$matcher, source:$source, enabled:$enabled, rule:.}}' >> "$tmp_entries"
     done
   done < <(_rule_files)
 
-  # Group entries by event into {event: [entries...]}
+  # Deduplicate by name: first occurrence wins (project > user > pack)
+  # Then filter out disabled rules (enabled: false used as override to suppress lower-tier rules)
   mkdir -p "$(dirname "$MAP_FILE")"
   if [[ -s "$tmp_entries" ]]; then
-    jq -s 'group_by(.event) | map({key:.[0].event, value:[.[].entry]}) | from_entries' "$tmp_entries" > "$MAP_FILE"
+    jq -s '
+      # Deduplicate: first occurrence per name wins (discovery order = precedence)
+      reduce .[] as $item ([];
+        if (map(.entry.name) | index($item.entry.name)) then . else . + [$item] end
+      )
+      # Filter out disabled rules
+      | map(select(.entry.enabled != "false"))
+      # Group by event
+      | group_by(.event)
+      | map({key:.[0].event, value:[.[].entry | del(.enabled)]})
+      | from_entries
+    ' "$tmp_entries" > "$MAP_FILE"
   else
     echo '{}' > "$MAP_FILE"
   fi

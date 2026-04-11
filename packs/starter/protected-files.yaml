@@ -1,0 +1,5 @@
+rules:
+  - name: protected-files
+    on: PreToolUse Write|Edit
+    run: scripts/protected-files.sh
+    ask: true

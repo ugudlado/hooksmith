@@ -1,0 +1,5 @@
+rules:
+  - name: process-kill-guard
+    on: PreToolUse Bash
+    run: scripts/process-kill-guard.sh
+    deny: true

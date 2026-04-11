@@ -1,0 +1,5 @@
+rules:
+  - name: worktree-boundary
+    on: PreToolUse Write|Edit
+    run: scripts/worktree-boundary.sh
+    deny: true

@@ -38,7 +38,7 @@ _matcher_matches() {
 # ── Evaluate a single rule (all fields pre-extracted in one jq call) ──
 
 _eval_rule() {
-  local rule="$1" input="$2"
+  local rule="$1" input="$2" rule_file="${3:-}"
 
   # Single jq call: extract action type, message, name, and mechanism type
   local meta
@@ -69,7 +69,7 @@ _eval_rule() {
     run)
       local run_field
       run_field=$(printf '%s\n' "$rule" | jq -r '.run // empty')
-      _eval_run "$name" "$run_field" "$action" "$input"
+      _eval_run "$name" "$run_field" "$action" "$input" "$rule_file"
       ;;
     prompt)
       local prompt_field
@@ -103,13 +103,24 @@ _eval_match() {
 }
 
 _eval_run() {
-  local name="$1" run_field="$2" action="$3" input="$4"
+  local name="$1" run_field="$2" action="$3" input="$4" rule_file="${5:-}"
 
   local script_content
   local resolved_path
   resolved_path=$(expand_tilde "$run_field")
   if [[ -f "$resolved_path" ]]; then
     script_content=$(cat "$resolved_path")
+  elif [[ -n "$rule_file" && "$run_field" == */* && "$run_field" != /* && "$run_field" != ~* ]]; then
+    # Relative path — resolve from the rule file's directory
+    local rule_dir
+    rule_dir=$(dirname "$rule_file")
+    resolved_path="$rule_dir/$run_field"
+    if [[ -f "$resolved_path" ]]; then
+      script_content=$(cat "$resolved_path")
+    else
+      debug "eval [$name]: script file not found: $resolved_path (relative to $rule_dir)"
+      return 0
+    fi
   elif [[ "$run_field" == */* || "$run_field" == ~* ]]; then
     debug "eval [$name]: script file not found: $resolved_path"
     return 0
@@ -219,14 +230,16 @@ main() {
       continue
     fi
 
+    local name rule_file
     name=$(printf '%s\n' "$entry" | jq -r '.name')
+    rule_file=$(printf '%s\n' "$entry" | jq -r '.file')
     debug "eval: evaluating rule '$name'"
 
     # Rule is cached in the map — no YAML load needed
     local rule
     rule=$(printf '%s\n' "$entry" | jq -c '.rule')
 
-    if ! _eval_rule "$rule" "$input"; then
+    if ! _eval_rule "$rule" "$input" "$rule_file"; then
       exit 0
     fi
   done <<< "$event_rules"

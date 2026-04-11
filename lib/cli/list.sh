@@ -30,6 +30,8 @@ SEP=$'\x01'
 _file_scope() {
   local file="$1"
   case "$file" in
+    "$HOOKSMITH_PACKS_DIR"/*) echo "pack" ;;
+    "$HOME"/.config/hooksmith/packs/*) echo "pack" ;;
     "$HOME"/.config/hooksmith/*|"$HOOKSMITH_USER_RULES_DIR"/*) echo "user" ;;
     *) echo "project" ;;
   esac
@@ -75,19 +77,20 @@ main() {
   _ensure_map
 
   local rules_data=()
-  local user_count=0 project_count=0 disabled_count=0
+  local user_count=0 project_count=0 pack_count=0 disabled_count=0
 
   # Flatten event-keyed map into entries with event context
   # Use "-" as placeholder for empty matcher to avoid IFS tab collapsing
   local all_entries
-  all_entries=$(jq -r 'to_entries[] | .key as $event | .value[] | [$event, .name, .file, (.matcher // "-" | if . == "" then "-" else . end), (.rule | tojson)] | join("\t")' "$MAP_FILE" 2>/dev/null)
+  all_entries=$(jq -r 'to_entries[] | .key as $event | .value[] | [$event, .name, .file, (.matcher // "-" | if . == "" then "-" else . end), (.source // "-"), (.rule | tojson)] | join("\t")' "$MAP_FILE" 2>/dev/null)
 
-  while IFS=$'\t' read -r event name file matcher rule_json; do
+  while IFS=$'\t' read -r event name file matcher source rule_json; do
     [[ -z "$name" ]] && continue
     [[ "$matcher" == "-" ]] && matcher=""
+    [[ "$source" == "-" ]] && source=""
 
     local scope
-    scope=$(_file_scope "$file")
+    scope="${source:-$(_file_scope "$file")}"
 
     # Filter by scope
     if [[ "$SCOPE" != "all" && "$scope" != "$SCOPE" ]]; then
@@ -105,6 +108,7 @@ main() {
 
     if [[ "$scope" == "user" ]]; then user_count=$((user_count + 1)); fi
     if [[ "$scope" == "project" ]]; then project_count=$((project_count + 1)); fi
+    if [[ "$scope" == "pack" ]]; then pack_count=$((pack_count + 1)); fi
   done <<< "$all_entries"
 
   # Also scan for disabled rules (not in map)
@@ -144,13 +148,14 @@ main() {
       disabled_count=$((disabled_count + 1))
       if [[ "$scope" == "user" ]]; then user_count=$((user_count + 1)); fi
       if [[ "$scope" == "project" ]]; then project_count=$((project_count + 1)); fi
+      if [[ "$scope" == "pack" ]]; then pack_count=$((pack_count + 1)); fi
     done
   done < <(_rule_files)
 
   local total=${#rules_data[@]}
 
   if [[ $total -eq 0 ]]; then
-    echo "No hooksmith rules found. Create rules in ~/.config/hooksmith/rules/ or .hooksmith/rules/"
+    echo "No hooksmith rules found. Create rules in ~/.config/hooksmith/hooks/ or .hooksmith/hooks/"
     exit 0
   fi
 
@@ -191,7 +196,7 @@ main() {
       printf "%-28s %-18s %-14s %-8s %-8s %s%s\n" "$name" "$event" "$matcher" "$mechanism" "$action" "$scope" "$suffix"
     done
     echo "$sep"
-    local summary="${total} rules (${user_count} user, ${project_count} project)"
+    local summary="${total} rules (${project_count} project, ${user_count} user, ${pack_count} pack)"
     [[ $disabled_count -gt 0 ]] && summary="$summary · ${disabled_count} disabled"
     echo "$summary"
   fi

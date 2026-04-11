@@ -4,8 +4,9 @@
 
 # ── Directory defaults ──
 
-HOOKSMITH_USER_RULES_DIR="${USER_RULES_DIR:-$HOME/.config/hooksmith/rules}"
-HOOKSMITH_PROJECT_RULES_DIR="${PROJECT_RULES_DIR:-.hooksmith/rules}"
+HOOKSMITH_USER_RULES_DIR="${USER_RULES_DIR:-$HOME/.config/hooksmith/hooks}"
+HOOKSMITH_PROJECT_RULES_DIR="${PROJECT_RULES_DIR:-.hooksmith/hooks}"
+HOOKSMITH_PACKS_DIR="${PACKS_DIR:-$HOME/.config/hooksmith/packs}"
 
 # ── Defaults ──
 

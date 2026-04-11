@@ -14,7 +14,8 @@ case "${1:-}" in
   doctor)  shift; exec bash "${PLUGIN_ROOT}/lib/cli/init.sh" "$@" ;;
   list)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/list.sh" "$@" ;;
   convert) shift; exec bash "${PLUGIN_ROOT}/lib/cli/convert.sh" "$@" ;;
+  pack)    shift; exec bash "${PLUGIN_ROOT}/lib/cli/pack.sh" "$@" ;;
   *)       echo "hooksmith: unknown command '${1:-}'" >&2
-           echo "Commands: eval, init, doctor, list, convert" >&2
+           echo "Commands: eval, init, doctor, list, convert, pack" >&2
            exit 1 ;;
 esac

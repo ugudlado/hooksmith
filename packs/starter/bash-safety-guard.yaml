@@ -1,0 +1,5 @@
+rules:
+  - name: bash-safety-guard
+    on: PreToolUse Bash
+    run: scripts/bash-safety-guard.sh
+    deny: true

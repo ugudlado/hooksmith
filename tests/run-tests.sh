@@ -112,16 +112,17 @@ print_summary() {
 eval_setup() {
   EVAL_DIR=$(mktemp -d)
   mkdir -p "$EVAL_DIR/.hooksmith"
-  # Override MAP_FILE and USER_RULES_DIR so tests are fully isolated
+  # Override MAP_FILE, USER_RULES_DIR, and PACKS_DIR so tests are fully isolated
   export MAP_FILE="$EVAL_DIR/.hooksmith/.map.json"
   export USER_RULES_DIR="$EVAL_DIR/.hooksmith/user-rules"
-  mkdir -p "$USER_RULES_DIR"
+  export PACKS_DIR="$EVAL_DIR/.hooksmith/packs"
+  mkdir -p "$USER_RULES_DIR" "$PACKS_DIR"
   trap 'rm -rf "$EVAL_DIR"' EXIT
 }
 
 eval_teardown() {
   rm -rf "$EVAL_DIR"
-  unset MAP_FILE USER_RULES_DIR
+  unset MAP_FILE USER_RULES_DIR PACKS_DIR
   trap - EXIT
 }
 
@@ -460,8 +461,8 @@ rules:
 YAML
 
   # Rule folder with grouped files
-  mkdir -p "$EVAL_DIR/.hooksmith/rules/security"
-  cat > "$EVAL_DIR/.hooksmith/rules/security/sudo.yaml" << 'YAML'
+  mkdir -p "$EVAL_DIR/.hooksmith/hooks/security"
+  cat > "$EVAL_DIR/.hooksmith/hooks/security/sudo.yaml" << 'YAML'
 rules:
   - name: sudo-block
     on: PreToolUse Bash
@@ -471,8 +472,8 @@ rules:
     deny: true
 YAML
 
-  mkdir -p "$EVAL_DIR/.hooksmith/rules/files"
-  cat > "$EVAL_DIR/.hooksmith/rules/files/env-guard.yaml" << 'YAML'
+  mkdir -p "$EVAL_DIR/.hooksmith/hooks/files"
+  cat > "$EVAL_DIR/.hooksmith/hooks/files/env-guard.yaml" << 'YAML'
 rules:
   - name: env-file-guard
     on: PreToolUse Write
@@ -508,8 +509,8 @@ test_eval_flat_rules_folder() {
   echo "flat rules folder"
   eval_setup
 
-  mkdir -p "$EVAL_DIR/.hooksmith/rules"
-  cat > "$EVAL_DIR/.hooksmith/rules/block-push.yaml" << 'YAML'
+  mkdir -p "$EVAL_DIR/.hooksmith/hooks"
+  cat > "$EVAL_DIR/.hooksmith/hooks/block-push.yaml" << 'YAML'
 rules:
   - name: block-push
     on: PreToolUse Bash
@@ -682,8 +683,8 @@ rules:
     deny: Base blocked
 YAML
 
-  mkdir -p "$EVAL_DIR/.hooksmith/rules"
-  cat > "$EVAL_DIR/.hooksmith/rules/extra.yaml" << 'YAML'
+  mkdir -p "$EVAL_DIR/.hooksmith/hooks"
+  cat > "$EVAL_DIR/.hooksmith/hooks/extra.yaml" << 'YAML'
 rules:
   - name: extra-rule
     on: PreToolUse Bash
@@ -697,7 +698,7 @@ YAML
   assert_denied "deletion: both files indexed, base rule fires" "$result"
 
   # Delete the extra rule file and touch map to ensure it looks fresh by mtime
-  rm "$EVAL_DIR/.hooksmith/rules/extra.yaml"
+  rm "$EVAL_DIR/.hooksmith/hooks/extra.yaml"
   sleep 1
 
   # Eval again — map should rebuild because file set changed
@@ -981,6 +982,182 @@ YAML
   eval_teardown
 }
 
+# ── Pack tests ──
+
+test_pack_discovery() {
+  echo "pack discovery"
+  eval_setup
+
+  # Create a pack with a rule
+  mkdir -p "$PACKS_DIR/test-pack"
+  cat > "$PACKS_DIR/test-pack/guard.yaml" << 'YAML'
+rules:
+  - name: pack-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Pack says no
+YAML
+
+  local out
+  out=$(eval_run "$FIXTURES/bash-push.json" PreToolUse Bash)
+  assert_allowed "pack rule allows non-matching command" "$out"
+
+  # Test with a matching command
+  local context='{"tool_input":{"command":"danger zone"}}'
+  out=$(echo "$context" | jq --arg e "PreToolUse" '. + {hook_event_name:$e}' | jq --arg t "Bash" '. + {tool_name:$t}' | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "pack rule denies matching command" "$out"
+  assert_contains "pack reason in output" "$out" "Pack says no"
+
+  eval_teardown
+}
+
+test_pack_override() {
+  echo "name-based override (project overrides pack)"
+  eval_setup
+
+  # Pack rule: deny danger
+  mkdir -p "$PACKS_DIR/test-pack"
+  cat > "$PACKS_DIR/test-pack/guard.yaml" << 'YAML'
+rules:
+  - name: my-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Pack says no
+YAML
+
+  # Project rule: same name, different behavior (context instead of deny)
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: my-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    context: Project overrode the pack rule
+YAML
+
+  local context='{"tool_input":{"command":"danger zone"}}'
+  local out
+  out=$(echo "$context" | jq --arg e "PreToolUse" '. + {hook_event_name:$e}' | jq --arg t "Bash" '. + {tool_name:$t}' | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  # Should get context (project override), not deny (pack)
+  assert_allowed "project override prevents pack deny" "$out"
+  assert_context "project override provides context" "$out"
+  assert_contains "project override message" "$out" "Project overrode the pack rule"
+
+  eval_teardown
+}
+
+test_pack_disable_override() {
+  echo "disabled override (project disables pack rule)"
+  eval_setup
+
+  # Pack rule: deny danger
+  mkdir -p "$PACKS_DIR/test-pack"
+  cat > "$PACKS_DIR/test-pack/guard.yaml" << 'YAML'
+rules:
+  - name: my-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: Pack says no
+YAML
+
+  # Project rule: same name, disabled — suppresses the pack rule
+  cat > "$EVAL_DIR/.hooksmith/hooksmith.yaml" << 'YAML'
+rules:
+  - name: my-guard
+    on: PreToolUse Bash
+    match: command =~ danger
+    deny: "should not fire"
+    enabled: false
+YAML
+
+  local context='{"tool_input":{"command":"danger zone"}}'
+  local out
+  out=$(echo "$context" | jq --arg e "PreToolUse" '. + {hook_event_name:$e}' | jq --arg t "Bash" '. + {tool_name:$t}' | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_allowed "disabled project rule suppresses pack rule" "$out"
+
+  eval_teardown
+}
+
+test_pack_relative_script() {
+  echo "pack relative script resolution"
+  eval_setup
+
+  # Pack rule with relative script path
+  mkdir -p "$PACKS_DIR/test-pack/scripts"
+  cat > "$PACKS_DIR/test-pack/guard.yaml" << 'YAML'
+rules:
+  - name: relative-guard
+    on: PreToolUse Bash
+    run: scripts/check.sh
+    deny: true
+YAML
+
+  cat > "$PACKS_DIR/test-pack/scripts/check.sh" << 'SH'
+#!/bin/bash
+INPUT=$(cat)
+CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+[[ "$CMD" =~ danger ]] && echo "Script caught danger"
+SH
+  chmod +x "$PACKS_DIR/test-pack/scripts/check.sh"
+
+  local context='{"tool_input":{"command":"danger zone"}}'
+  local out
+  out=$(echo "$context" | jq --arg e "PreToolUse" '. + {hook_event_name:$e}' | jq --arg t "Bash" '. + {tool_name:$t}' | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_denied "relative script in pack fires" "$out"
+  assert_contains "relative script reason" "$out" "Script caught danger"
+
+  # Non-matching command should pass
+  context='{"tool_input":{"command":"echo safe"}}'
+  out=$(echo "$context" | jq --arg e "PreToolUse" '. + {hook_event_name:$e}' | jq --arg t "Bash" '. + {tool_name:$t}' | (cd "$EVAL_DIR" && bash "$HOOKSMITH" eval 2>/dev/null))
+  assert_allowed "relative script passes safe commands" "$out"
+
+  eval_teardown
+}
+
+test_pack_cli() {
+  echo "pack CLI commands"
+  eval_setup
+
+  local out
+
+  # List with no packs
+  out=$(PACKS_DIR="$PACKS_DIR" bash "$HOOKSMITH" pack list 2>&1)
+  assert_contains "pack list empty" "$out" "No packs installed"
+
+  # Create a fake pack manually
+  mkdir -p "$PACKS_DIR/manual-pack"
+  cat > "$PACKS_DIR/manual-pack/rule.yaml" << 'YAML'
+rules:
+  - name: manual-rule
+    on: PreToolUse Bash
+    match: command =~ test
+    deny: manual
+YAML
+  cat > "$PACKS_DIR/manual-pack/.packinfo" << 'INFO'
+source=owner/repo
+repo=https://github.com/owner/repo.git
+subpath=
+installed=2026-01-01T00:00:00Z
+INFO
+
+  # List should show the pack
+  out=$(PACKS_DIR="$PACKS_DIR" bash "$HOOKSMITH" pack list 2>&1)
+  assert_contains "pack list shows installed" "$out" "manual-pack"
+  assert_contains "pack list shows source" "$out" "owner/repo"
+
+  # Remove
+  out=$(PACKS_DIR="$PACKS_DIR" bash "$HOOKSMITH" pack remove manual-pack 2>&1)
+  assert_contains "pack remove confirms" "$out" "Removed pack"
+
+  # Verify removed
+  if [[ ! -d "$PACKS_DIR/manual-pack" ]]; then
+    _pass "pack remove deletes directory"
+  else
+    _fail "pack remove deletes directory" "directory still exists"
+  fi
+
+  eval_teardown
+}
+
 # ── Run ──
 
 echo "Hooksmith Test Suite"
@@ -1055,5 +1232,17 @@ echo ""
 echo "debug"
 echo "─────"
 test_eval_debug
+echo ""
+echo "packs"
+echo "─────"
+test_pack_discovery
+echo ""
+test_pack_override
+echo ""
+test_pack_disable_override
+echo ""
+test_pack_relative_script
+echo ""
+test_pack_cli
 echo ""
 print_summary
