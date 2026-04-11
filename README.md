@@ -5,7 +5,7 @@ A Claude Code plugin for declarative hook rules. Define behavior as YAML — hoo
 ## How It Works
 
 ```
-~/.config/hooksmith/rules/*.yaml  ──→  hooksmith eval  ──→  JSON decision
+~/.config/hooksmith/hooks/*.yaml  ──→  hooksmith eval  ──→  JSON decision
 ```
 
 One universal evaluator routes to the right rules at runtime. Claude Code fires an event, hooksmith checks matching rules, the first rule that triggers emits a decision.
@@ -38,7 +38,7 @@ claude --plugin-dir /path/to/hooksmith
 Drop a YAML file and it's live next session:
 
 ```yaml
-# ~/.config/hooksmith/rules/block-rm.yaml
+# ~/.config/hooksmith/hooks/block-rm.yaml
 rules:
   - name: block-rm
     on: PreToolUse Bash
@@ -64,14 +64,14 @@ Then remove the converted entries from `settings.json` — hooksmith owns them n
 
 ## Starter Rules
 
-Ready-to-use rules you can copy to `~/.config/hooksmith/rules/`. Each rule is a standalone YAML file — pick what you need.
+Ready-to-use rules you can copy to `~/.config/hooksmith/hooks/`. Each rule is a standalone YAML file — pick what you need.
 
 ### Safety Guards
 
 **Block dangerous bash commands** — catches `rm -rf /`, `sudo`, `chmod 777`, curl-pipe-sh:
 
 ```yaml
-# ~/.config/hooksmith/rules/bash-safety-guard.yaml
+# ~/.config/hooksmith/hooks/bash-safety-guard.yaml
 rules:
   - name: bash-safety-guard
     on: PreToolUse Bash
@@ -82,7 +82,7 @@ rules:
 **Process kill guard** — only allows killing processes Claude started or processes inside the current repo:
 
 ```yaml
-# ~/.config/hooksmith/rules/process-kill-guard.yaml
+# ~/.config/hooksmith/hooks/process-kill-guard.yaml
 rules:
   - name: process-kill-guard
     on: PreToolUse Bash
@@ -93,7 +93,7 @@ rules:
 **Protected files** — asks for confirmation before editing lock files and manifests:
 
 ```yaml
-# ~/.config/hooksmith/rules/protected-files.yaml
+# ~/.config/hooksmith/hooks/protected-files.yaml
 rules:
   - name: protected-files
     on: PreToolUse Write|Edit
@@ -104,7 +104,7 @@ rules:
 **Worktree boundary** — prevents writes outside the active git worktree:
 
 ```yaml
-# ~/.config/hooksmith/rules/worktree-boundary.yaml
+# ~/.config/hooksmith/hooks/worktree-boundary.yaml
 rules:
   - name: worktree-boundary
     on: PreToolUse Write|Edit
@@ -117,7 +117,7 @@ rules:
 **Autopilot redirect** — detects feature/bug requests and suggests `/develop`:
 
 ```yaml
-# ~/.config/hooksmith/rules/autopilot-redirect.yaml
+# ~/.config/hooksmith/hooks/autopilot-redirect.yaml
 rules:
   - name: autopilot-redirect
     on: UserPromptSubmit
@@ -131,7 +131,7 @@ rules:
 **Loop detector** — blocks Claude from getting stuck in retry loops:
 
 ```yaml
-# ~/.config/hooksmith/rules/loop-detector.yaml
+# ~/.config/hooksmith/hooks/loop-detector.yaml
 rules:
   - name: loop-detector
     on: Stop
@@ -144,7 +144,7 @@ rules:
 **Git status at session start** — gives Claude branch and change awareness:
 
 ```yaml
-# ~/.config/hooksmith/rules/session-git-status.yaml
+# ~/.config/hooksmith/hooks/session-git-status.yaml
 rules:
   - name: session-git-status
     on: SessionStart
@@ -155,7 +155,7 @@ rules:
 **Post-compact reminders** — re-injects critical context after compaction:
 
 ```yaml
-# ~/.config/hooksmith/rules/post-compact-reminders.yaml
+# ~/.config/hooksmith/hooks/post-compact-reminders.yaml
 rules:
   - name: post-compact-reminders
     on: PostCompact
@@ -168,7 +168,7 @@ rules:
 **Auto-format** — runs prettier/formatter after Write/Edit:
 
 ```yaml
-# ~/.config/hooksmith/rules/auto-format.yaml
+# ~/.config/hooksmith/hooks/auto-format.yaml
 rules:
   - name: auto-format
     on: PostToolUse Write|Edit
@@ -179,7 +179,7 @@ rules:
 **Smart notifications** — macOS alerts for permission prompts and idle:
 
 ```yaml
-# ~/.config/hooksmith/rules/smart-notify.yaml
+# ~/.config/hooksmith/hooks/smart-notify.yaml
 rules:
   - name: smart-notify
     on: Notification
@@ -189,6 +189,66 @@ rules:
 
 > Scripts referenced above live in `~/.config/hooksmith/scripts/`. See `examples/` for self-contained rules that don't need external scripts.
 
+## Packs
+
+Packs are curated rule collections you can install from any git repo and update independently.
+
+### Installing a pack
+
+```bash
+# From a git repo (whole repo as a pack)
+hooksmith pack install owner/repo
+
+# From a subdirectory of a git repo
+hooksmith pack install ugudlado/hooksmith/packs/starter
+
+# Full URL
+hooksmith pack install https://github.com/owner/repo
+```
+
+### Managing packs
+
+```bash
+hooksmith pack list              # Show installed packs
+hooksmith pack update [name]     # Update one or all packs
+hooksmith pack remove <name>     # Remove an installed pack
+```
+
+### Overriding pack rules
+
+Pack rules have the lowest precedence. Override any pack rule by creating a rule with the **same name** at user or project level:
+
+```yaml
+# Override: change bash-safety-guard from deny to ask
+rules:
+  - name: bash-safety-guard
+    on: PreToolUse Bash
+    run: scripts/bash-safety-guard.sh
+    ask: true  # ask instead of deny
+```
+
+To disable a pack rule entirely for a specific project:
+
+```yaml
+# .hooksmith/hooks/overrides.yaml
+rules:
+  - name: bash-safety-guard
+    on: PreToolUse Bash
+    match: command =~ .
+    deny: "unused"
+    enabled: false
+```
+
+### Starter pack
+
+The hooksmith repo includes a starter pack with safety rules:
+
+```bash
+hooksmith pack install ugudlado/hooksmith/packs/starter
+```
+
+Includes: `bash-safety-guard`, `process-kill-guard`, `protected-files`, `worktree-boundary`.
+
 ## CLI
 
 The plugin's `bin/` directory is added to PATH automatically — all commands are bare:
@@ -197,15 +257,19 @@ The plugin's `bin/` directory is added to PATH automatically — all commands ar
 hooksmith list [--json] [--scope user|project|all]   # Show registered rules
 hooksmith init                                        # Regenerate hooks.json from rules
 hooksmith convert [--apply] [--scope user|project]    # Migrate settings.json hooks to YAML
+hooksmith pack <install|update|remove|list>            # Manage rule packs
 hooksmith eval                                        # Evaluate rules (called by hooks.json, not directly)
 ```
 
 ## Rule Scopes
 
-- **User-level** (`~/.config/hooksmith/rules/`): Applies to all projects
-- **Project-level** (`.hooksmith/rules/`): Applies to that project only
+Rules are discovered from three tiers (highest precedence first):
 
-Rules from both scopes are evaluated. Use a single-file format with multiple rules, or one file per rule.
+1. **Project-level** (`.hooksmith/hooks/`): Applies to that project only
+2. **User-level** (`~/.config/hooksmith/hooks/`): Applies to all projects
+3. **Packs** (`~/.config/hooksmith/packs/*/`): Installed rule collections
+
+When multiple rules share the same `name`, the highest-precedence one wins. A project rule with `enabled: false` and a matching name disables the lower-tier rule.
 
 ## Rule Format
 
