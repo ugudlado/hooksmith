@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.1 — 2026-04-11
+
+! _file_source() scope detection broken by hooks/ rename — user rules reported wrong scope
+
 ## 3.0.0 — 2026-04-11
 
 + Pack system: install rule packs from git repos; project and user rules silently override pack rules by name
