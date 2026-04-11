@@ -5,6 +5,8 @@
   "author": {
     "name": "Mahesh"
   },
+  "repository": "https://github.com/ugudlado/hooksmith",
+  "license": "MIT",
   "keywords": [
     "hooks",
     "automation",
