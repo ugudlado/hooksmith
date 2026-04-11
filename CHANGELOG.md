@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.0.2 — 2026-04-11
+
+! Fixed hook command execution by using ${CLAUDE_PLUGIN_ROOT} for reliable PATH resolution instead of relying on bare command names
+* Added repository and license fields to plugin manifest
+
 ## 3.0.1 — 2026-04-11
 
 ! _file_source() scope detection broken by hooks/ rename — user rules reported wrong scope
