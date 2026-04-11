@@ -5,19 +5,19 @@ description: "This skill should be used when the user asks to 'create a hook rul
 
 # Hooksmith
 
-Manage Claude Code hooks declaratively via YAML rules. The `hooksmith` CLI evaluates rules live at runtime, lists what's registered, and generates the routing table.
+Declarative YAML hook rules for Claude Code. The `hooksmith` CLI evaluates rules live at runtime, lists registered rules, and rebuilds the routing map.
 
 ## Architecture
 
-Hooksmith is a **single-evaluator, multi-rule** system. Instead of one hook per rule, there's one universal evaluator that dynamically routes to the right rules at runtime.
+Hooksmith is a **single-evaluator, multi-rule** system. One universal evaluator dynamically routes to the right rules at runtime — no separate hook per rule.
 
 ### How it works
 
-1. `hooks/hooks.json` registers `hooksmith eval` as a `type: "command"` hook for each event
-2. When Claude Code fires an event, it calls `hooksmith eval` and pipes in a JSON payload
-3. `eval.sh` checks the auto-indexing map (`.hooksmith/.map.json`) for matching rules
-4. Each matching rule is loaded from YAML and evaluated via its mechanism (`match`, `run`, or `prompt`)
-5. The first rule that triggers emits a JSON decision back to Claude Code
+1. `hooks/hooks.json` registers `hooksmith eval` for all Claude Code events (static file)
+2. Claude Code fires an event → calls `hooksmith eval` with JSON on stdin
+3. `eval.sh` looks up the event in `.hooksmith/.map.json` (event-keyed index with cached rules)
+4. Matching rules are evaluated via their mechanism (`match`, `run`, or `prompt`)
+5. First rule that triggers emits a JSON decision back to Claude Code
 
 ### Event payload
 
@@ -32,14 +32,6 @@ Claude Code pipes this JSON to stdin:
 }
 ```
 
-### Registered events and auto-init
-
-On every SessionStart, hooksmith automatically scans all rules, discovers which events they use, and regenerates `hooks.json` with exactly those events (plus SessionStart itself). This means:
-
-- **Adding a rule for a new event** (e.g. `on: SubagentStop`) is automatic — next session, hooksmith registers it
-- **No manual `hooksmith init` needed** in normal use
-- Only events with active rules get registered, avoiding unnecessary shell invocations
-
 ### The `on` field
 
 Every rule's `on` field has two parts:
@@ -52,58 +44,51 @@ on: <Event> [ToolMatcher]
 - **Tool matcher** (optional): regex tested against `tool_name` — `Bash`, `Write|Edit`, etc.
 
 Examples:
-- `on: PreToolUse Bash` — only when Claude is about to run Bash
+- `on: PreToolUse Bash` — before Claude runs Bash
 - `on: PreToolUse Write|Edit` — before Write or Edit
 - `on: UserPromptSubmit` — on every user message (no tool matcher)
 - `on: Stop` — when Claude is about to end its turn
 
 ### Rule file locations
 
-Rules are auto-discovered from two locations:
+Rules are auto-discovered from three tiers (highest priority first):
 
 - **Project scope**: `.hooksmith/hooks/<name>.yaml` or `.hooksmith/hooksmith.yaml`
 - **User scope**: `~/.config/hooksmith/hooks/<name>.yaml` or `~/.config/hooksmith/hooksmith.yaml`
+- **Pack scope**: `~/.config/hooksmith/packs/<pack>/<name>.yaml`
 
-No build step — drop a YAML file and it's live. The map auto-rebuilds when any rule file changes.
+No build step — drop a YAML file and it's live. The map auto-rebuilds when any rule file is newer than `.map.json` or when a file is added or deleted.
 
-### Auto-indexing map
+### Auto-init
 
-The map (`.hooksmith/.map.json`) is a lightweight routing index:
-
-```json
-[{"name": "block-rm", "file": ".hooksmith/hooks/security/block-rm.yaml", "index": 0}]
-```
-
-It only stores name, file path, and rule array index. Actual rule content stays in YAML. The map auto-rebuilds when:
-- Any rule file is newer than `.map.json`
-- A rule file is added or deleted
+On every SessionStart, hooksmith rebuilds the map index. Rules added mid-session also activate immediately — the map freshness check runs before every evaluation.
 
 ## Creating a Hook — Guided Workflow
 
-When the user asks to create, add, or write a hook rule, follow this flow:
+When a hook rule is requested, follow this flow:
 
 ### Step 1: Understand the intent
 
-Read what the user wants to achieve. Extract:
+Extract from the request:
 - **What to watch**: which event and tool (e.g. "when Claude runs bash commands", "before writing files")
 - **What to check**: the condition (e.g. "if the command contains rm -rf", "if the file is a .env file")
 - **What to do**: the action (e.g. "block it", "ask for approval", "add context")
 
 If the intent is vague, ask one focused question to clarify the condition or action before proceeding.
 
-### Step 2: Recommend a mechanism
+### Step 2: Select a mechanism
 
-Pick the best mechanism based on the intent — don't ask the user to choose:
+Pick the best mechanism based on the intent:
 
 | Use `match` when... | Use `run` when... | Use `prompt` when... |
 |---------------------|-------------------|----------------------|
 | Matching a pattern in a known field (command text, file path, content) | Logic is complex, stateful, or needs shell utilities | The condition is nuanced or contextual |
-| Simple allow/block with no ambiguity | The user already has a `.sh` script | You want Claude to reason about the action |
+| Simple allow/block with no ambiguity | An existing `.sh` script handles the logic | Claude should reason about the action |
 | Best performance, zero overhead | Full control over output format | Human-language policies (e.g. "review for security risks") |
 
-**Default preference order: match → run → prompt**. Use prompt when the logic is best expressed in natural language.
+**Default preference order: match → run → prompt**. Prefer prompt when the logic is best expressed in natural language.
 
-### Step 3: Draft the rule and show it to the user
+### Step 3: Draft and confirm
 
 Generate the complete YAML and **show it before writing anything**:
 
@@ -115,11 +100,11 @@ rules:
     deny: "Blocked: rm -rf is not allowed."
 ```
 
-Ask the user to confirm or request changes.
+Present the rule for confirmation or changes before proceeding.
 
-### Step 4: Write and confirm
+### Step 4: Write and verify
 
-Once the user approves:
+Once confirmed:
 
 1. **Write** the rule file:
    ```
@@ -127,20 +112,21 @@ Once the user approves:
    .hooksmith/hooks/<name>.yaml              # project scope
    ```
 
-2. **Confirm** with `hooksmith list`.
+2. **Verify** with `hooksmith list`.
 
-3. **Tell the user**: *"Done. The `<name>` hook is registered and will be active from the next session."*
+3. **Confirm**: "The `<name>` hook is registered and active."
 
 ## CLI Commands
 
 ```bash
 hooksmith eval       # Evaluate rules (called by hooks.json — not invoked directly)
-hooksmith init       # Scan rules, regenerate hooks.json (runs automatically on SessionStart)
+hooksmith init       # Rebuild map + run diagnostics (automatic on SessionStart)
 hooksmith list       # Show registered hooks [--json] [--scope user|project|all]
 hooksmith convert    # Migrate settings.json hooks to YAML [--apply] [--scope user|project]
+hooksmith pack       # Manage rule packs (install/update/remove/list)
 ```
 
-All commands are invoked as bare commands (the plugin's `bin/` directory is on PATH).
+All commands are bare commands (the plugin's `bin/` directory is on PATH).
 
 ### hooksmith list
 
@@ -154,7 +140,7 @@ Migrates command hooks from `settings.json` into YAML rule files.
 
 ### hooksmith init
 
-Scans all rule files, discovers which events they use, and generates `hooks.json` with exactly those events plus SessionStart. Runs automatically on every SessionStart — you rarely need to run this manually.
+Rebuilds the map index and runs diagnostics. Runs automatically on every SessionStart — manual invocation is rarely needed.
 
 ## Rule Format
 
@@ -228,9 +214,7 @@ rules:
     ask: true
 ```
 
-The prompt text + tool input are injected into Claude's context via the command hook output. Claude then reasons about whether to allow/deny. This is the most flexible mechanism — use it when the condition is too nuanced for regex or a script.
-
-Prompt rules always fire when the event matches (no condition to test). The action (`deny`, `ask`, `context`) determines how Claude treats the injected prompt.
+Prompt text + tool input are injected into Claude's context. Claude then reasons about whether to allow/deny. Prompt rules always fire when the event matches (no condition to test). The action (`deny`, `ask`, `context`) determines how Claude treats the injected prompt.
 
 Non-blocking context injection:
 
@@ -306,7 +290,7 @@ log "message"                 # Debug to stderr
 | Elicitation | Elicitation requested |
 | ElicitationResult | Elicitation completed |
 
-Events are auto-registered based on your rules. SessionStart is always registered for auto-init. Just use any event in a rule's `on` field and it will be active next session.
+Events are auto-registered via the static `hooks.json`. Any event in a rule's `on` field activates immediately — the map rebuilds on every rule file change.
 
 ## Additional Resources
 
