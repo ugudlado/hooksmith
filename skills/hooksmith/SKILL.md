@@ -140,7 +140,7 @@ hooksmith list       # Show registered hooks [--json] [--scope user|project|all]
 hooksmith convert    # Migrate settings.json hooks to YAML [--apply] [--scope user|project]
 ```
 
-All commands are invoked via `bash ${CLAUDE_PLUGIN_ROOT}/hooksmith <command>`.
+All commands are invoked as bare commands (the plugin's `bin/` directory is on PATH).
 
 ### hooksmith list
 
@@ -310,4 +310,15 @@ Events are auto-registered based on your rules. SessionStart is always registere
 
 ## Additional Resources
 
-- **`examples/`** — Working examples for each mechanism (match, run, prompt)
+### Reference Files
+
+For detailed field documentation and real-world patterns, consult:
+- **`references/field-reference.md`** — Complete field reference: all events, match fields, action types, pattern syntax, advanced patterns
+- **`references/patterns.md`** — 15 production rule patterns organized by category: safety guards, workflow automation, session lifecycle, subagent management, dev tools. Includes a pattern selection guide.
+
+### Example Files
+
+Working examples in `examples/`:
+- **`examples/regex-rule.yaml`** — Match mechanism (pattern-based deny)
+- **`examples/script-rule.yaml`** — Run mechanism (external script + deny: true)
+- **`examples/prompt-rule.yaml`** — Prompt mechanism (LLM-evaluated ask)

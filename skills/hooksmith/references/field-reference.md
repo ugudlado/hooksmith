@@ -1,54 +1,115 @@
 # Complete Field Reference
 
-## Required Field: `id`
+## Required Fields
 
-Every rule must have a unique `id`. It serves as the hook's stable identifier used by the runner (`hooksmith run <id>`), the registry listing (`hooksmith list`), and build validation.
+### `name`
+
+Every rule must have a unique name. It serves as the hook's stable identifier in the map index and `hooksmith list` output.
 
 ```yaml
-id: bash-safety-guard   # lowercase kebab-case only
+rules:
+  - name: bash-safety-guard   # lowercase kebab-case
 ```
 
 **Rules:**
-- Format: `^[a-z0-9-]+$` — lowercase letters, digits, and hyphens only
-- Must match the YAML filename without extension: `id: bash-safety-guard` → file must be named `bash-safety-guard.yaml`
+- Format: lowercase letters, digits, and hyphens
 - Must be unique across all rules (user + project scopes combined)
-- Build will error on missing, invalid format, filename mismatch, or duplicate
+- Convention: descriptive kebab-case — `auto-format`, `process-kill-guard`, `spec-adherence-check`
 
-**Convention:** Use descriptive kebab-case names: `auto-format`, `process-kill-guard`, `spec-adherence-check`
+### `on`
+
+Specifies the event and optional tool matcher:
+
+```yaml
+on: PreToolUse Bash           # Event + tool matcher
+on: PreToolUse Write|Edit     # Alternation in matcher
+on: Stop                      # Event only (no matcher)
+on: UserPromptSubmit          # Event only
+```
+
+- **Event** (required): must match `hook_event_name` exactly
+- **Tool matcher** (optional): regex tested against `tool_name`
 
 ---
 
 ## Event Types
 
-All supported Claude Code hook events:
-
 | Event | Description | Common use |
 |-------|-------------|------------|
 | `PreToolUse` | Before a tool executes | Block dangerous commands, require approval |
-| `PostToolUse` | After a tool completes | Warn about results, inject context |
+| `PostToolUse` | After a tool completes | Auto-format, track processes, inject warnings |
+| `PostToolUseFailure` | After a tool fails | Error analysis, retry guidance |
+| `PermissionRequest` | When a permission check occurs | Custom permission logic |
 | `Stop` | Before Claude stops responding | Block premature stops, enforce checklists |
-| `UserPromptSubmit` | When user sends a message | Inject context, enforce guidelines |
-| `SessionStart` | When a session begins | Set up context, check environment |
-| `SubagentStart` | When a subagent launches | Inject context for subagents |
-| `SubagentStop` | When a subagent completes | Review subagent output |
-| `PostCompact` | After context compression | Re-inject critical context |
-| `Notification` | On notifications | Logging only (no results supported) |
+| `StopFailure` | Stop was blocked and failed | Retry or escalate |
+| `UserPromptSubmit` | User submits a message | Inject context, workflow routing |
+| `SessionStart` | Session begins | Git status, environment setup |
+| `SessionEnd` | Session ends | Reflection, cleanup |
+| `SubagentStart` | Subagent spawned | Inject spec context for subagents |
+| `SubagentStop` | Subagent about to finish | Review subagent output |
+| `TeammateIdle` | Teammate has no work | Reassign or notify |
+| `TaskCompleted` | A task finishes | Logging, next-step triggers |
+| `Notification` | Notification fired | macOS alerts, logging |
+| `PreCompact` | Before context compaction | Save critical state |
+| `PostCompact` | After context compaction | Re-inject reminders |
+| `ConfigChange` | Settings changed | Validation, sync |
+| `InstructionsLoaded` | CLAUDE.md loaded | Augment instructions |
+| `WorktreeCreate` | Git worktree created | Setup worktree context |
+| `WorktreeRemove` | Git worktree removed | Cleanup |
+| `Elicitation` | Elicitation requested | Custom elicitation logic |
+| `ElicitationResult` | Elicitation completed | Process elicitation results |
 
-## Matcher Field
+---
 
-The `matcher` field filters which tools trigger PreToolUse/PostToolUse hooks. Without a matcher, the hook runs for all tools.
+## Tool Matcher
+
+The tool matcher (second part of `on`) filters which tools trigger PreToolUse/PostToolUse hooks. Without a matcher, the hook runs for all tools.
 
 ```yaml
-matcher: Bash              # Only Bash commands
-matcher: Write|Edit        # Write or Edit operations
-matcher: Read              # File reads
+on: PreToolUse Bash              # Only Bash commands
+on: PreToolUse Write|Edit        # Write or Edit operations
+on: PostToolUse Bash             # After Bash completes
 ```
 
 Common tool names: `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent`, `WebFetch`, `WebSearch`
 
-## Field Values for Regex Rules
+---
 
-The `field` parameter in regex rules determines which JSON field to test:
+## Mechanism Fields (pick one)
+
+### `match` — Pattern matching
+
+```yaml
+match: command =~ rm[[:space:]]+-rf
+```
+
+Syntax: `<field> =~ <pattern>` using POSIX ERE (bash `=~` operator).
+
+### `run` — Custom bash logic
+
+Inline script or external file path:
+
+```yaml
+run: |
+  source "$HOOKLIB"
+  read_input
+  cmd=$(get_field command)
+  [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
+
+run: ~/.config/hooksmith/scripts/bash-safety-guard.sh
+```
+
+### `prompt` — LLM-evaluated rules
+
+```yaml
+prompt: "Review this command for security risks."
+```
+
+---
+
+## Match Field Values
+
+The field name in `match` rules determines which JSON value to test:
 
 | Field value | Extracts from | Use case |
 |-------------|---------------|----------|
@@ -60,95 +121,80 @@ The `field` parameter in regex rules determines which JSON field to test:
 | `cwd` | `.cwd` | Current working directory |
 | `<custom>` | `.tool_input.<custom>` then `.<custom>` | Any other field |
 
-## Pattern Syntax
+---
 
-Patterns use bash extended regex (`=~` operator). Use POSIX classes (`[[:space:]]`, `[[:digit:]]`) instead of PCRE shortcuts (`\s`, `\d`) — bash does not support PCRE:
+## Action Fields (pick one)
+
+| Action | Effect | Compatible events |
+|--------|--------|-------------------|
+| `deny: "<reason>"` | Block the tool use | PreToolUse, PostToolUse, Stop, UserPromptSubmit, SubagentStop |
+| `deny: true` | Block; script stdout becomes the reason | For `run` rules |
+| `ask: "<reason>"` | Prompt user for approval | PreToolUse only |
+| `ask: true` | Ask; script stdout becomes the reason | For `run` rules |
+| `context: "<text>"` | Inject additional context for Claude | All events |
+| `context: true` | Inject; script stdout becomes context | For `run` rules |
+
+---
+
+## Pattern Syntax (POSIX ERE)
+
+Use POSIX character classes — bash does not support PCRE shortcuts like `\s` or `\d`:
 
 ```yaml
 # Character classes
-pattern: 'rm[[:space:]]+-rf'              # [[:space:]] for whitespace
-pattern: '\.(env|pem|key)$'      # Alternation and anchors
-pattern: '^(sudo|su)[[:space:]]+'         # Start anchor
+match: command =~ rm[[:space:]]+-rf              # whitespace
+match: file_path =~ \.(env|pem|key)$             # alternation + anchor
+match: command =~ ^(sudo|su)[[:space:]]+          # start anchor
 
 # Quantifiers
-pattern: 'DROP[[:space:]]+TABLE'          # One or more whitespace
-pattern: 'password[=:].*'        # Any characters after
+match: command =~ DROP[[:space:]]+TABLE           # one or more whitespace
+match: command =~ password[=:].*                  # any characters after
 
 # Special characters — single-quote the pattern in YAML
-pattern: 'curl.*\|[[:space:]]*sh'         # Pipe to shell
-pattern: 'chmod[[:space:]]+777'           # Numeric permissions
+match: command =~ curl.*\|[[:space:]]*sh          # pipe to shell
+match: command =~ chmod[[:space:]]+777            # numeric permissions
 ```
 
-## Prompt Text
+---
 
-For prompt rules, the `prompt` field supports multi-line YAML:
+## Optional Fields
 
-```yaml
-prompt: |
-  Review this command: $TOOL_INPUT
-  If dangerous, respond with deny JSON.
-  Otherwise respond with: {}
-```
+| Field     | Default | Description |
+|-----------|---------|-------------|
+| `enabled` | `true`  | Set `false` to disable without removing |
 
-Available variables (substituted by Claude Code at runtime):
-- `$TOOL_INPUT` — The tool's input parameters
-- `$TOOL_RESULT` — The tool's output (PostToolUse only)
-- `$USER_PROMPT` — The user's message (UserPromptSubmit only)
-
-## Fail Mode
-
-Controls behavior when a script/regex rule crashes at runtime:
-
-| Mode | On script error | Use when |
-|------|-----------------|----------|
-| `open` (default) | Allow the operation | Non-critical rules, warnings |
-| `closed` | Deny the operation | Security-critical rules |
-
-## Timeout
-
-Default: 10 seconds. Prompt rules may need longer:
-
-```yaml
-timeout: 30    # For prompt rules with complex evaluation
-timeout: 5     # For simple regex/script rules
-```
+---
 
 ## Advanced Patterns
 
 ### Disable a global rule per-project
 
-Create a project rule with the same filename and `enabled: false`:
+Create a project rule file with the same name and `enabled: false`:
 
 ```yaml
-# .hooksmith/rules/block-rm.yaml
-# Overrides ~/.config/hooksmith/rules/block-rm.yaml
-enabled: false
-event: PreToolUse
-mechanism: regex
-field: command
-pattern: 'unused'
-result: deny
+# .hooksmith/rules/bash-safety-guard.yaml
+# Overrides ~/.config/hooksmith/rules/bash-safety-guard.yaml
+rules:
+  - name: bash-safety-guard
+    on: PreToolUse Bash
+    match: command =~ unused
+    deny: "unused"
+    enabled: false
 ```
 
-### Multiple patterns for different results
+### Multiple rules in one file
 
-Split into separate rule files — one rule per file:
-
-```
-warn-git-force.yaml    # result: warn
-block-git-reset.yaml   # result: deny
-```
-
-### Script rule with fail_mode: closed
-
-For security-critical scripts that must deny on any error:
+Group related rules in the same `rules:` array:
 
 ```yaml
-event: PreToolUse
-matcher: Bash
-mechanism: script
-script: ~/.claude/hooks/security-check.sh
-result: deny
-fail_mode: closed
-timeout: 15
+rules:
+  - name: block-rm-rf
+    on: PreToolUse Bash
+    match: command =~ rm[[:space:]]+-rf[[:space:]]+(/|~)
+    deny: "Blocked: destructive rm"
+
+  - name: block-sudo
+    on: PreToolUse Bash
+    match: command =~ ^sudo[[:space:]]
+    deny: "Blocked: sudo not allowed"
 ```

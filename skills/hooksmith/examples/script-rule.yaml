@@ -1,5 +1,5 @@
 rules:
   - name: process-kill-guard
     on: PreToolUse Bash
-    run: ~/.claude/hooks/process-kill-guard.sh
+    run: ~/.config/hooksmith/scripts/process-kill-guard.sh
     deny: true
