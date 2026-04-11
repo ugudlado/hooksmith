@@ -1,22 +1,24 @@
 # hooksmith
 
-A Claude Code plugin that compiles declarative YAML rule files into native `hooks.json` entries. Define hook behavior as simple YAML rules — the plugin automatically rebuilds when rules change.
+A Claude Code plugin for declarative hook rules. Define behavior as YAML — hooksmith evaluates rules at runtime. No build step.
 
 ## How It Works
 
 ```
-~/.config/hooksmith/rules/*.yaml    →    hooksmith build    →    hooks.json
+~/.config/hooksmith/rules/*.yaml  ──→  hooksmith eval  ──→  JSON decision
 ```
 
-Each YAML rule becomes a native hook entry:
+One universal evaluator routes to the right rules at runtime. Claude Code fires an event, hooksmith checks matching rules, the first rule that triggers emits a decision.
 
-| Mechanism | hooks.json type | Runtime behavior |
-|-----------|----------------|------------------|
-| `regex`   | `type: command` | Thin bash wrapper tests a field against a pattern |
-| `script`  | `type: command` | Your bash script runs directly |
-| `prompt`  | `type: prompt`  | LLM evaluates the prompt natively — zero script overhead |
+| Mechanism | How it works | Best for |
+|-----------|-------------|----------|
+| `match`   | Tests a field against a POSIX ERE pattern | Simple pattern matching, zero overhead |
+| `run`     | Executes a bash script (inline or file) | Complex logic, stateful checks |
+| `prompt`  | Injects a prompt for Claude to reason about | Nuanced, context-dependent policies |
 
 ## Installation
+
+Requires Claude Code v2.1.91+.
 
 ```bash
 claude plugin add ugudlado/hooksmith
@@ -29,21 +31,26 @@ git clone https://github.com/ugudlado/hooksmith.git
 claude --plugin-dir /path/to/hooksmith
 ```
 
-## CLI
+## Getting Started
 
-```bash
-hooksmith list [--json] [--scope user|project|all]   # Show registered rules
-hooksmith run <id>                                    # Execute a rule by id
-hooksmith build                                       # Rebuild hooks.json from rules
-hooksmith start                                       # SessionStart: rebuild if rules changed
-hooksmith convert [--apply] [--scope user|project]   # Migrate settings.json hooks to YAML
+### Creating your first rule
+
+Drop a YAML file and it's live next session:
+
+```yaml
+# ~/.config/hooksmith/rules/block-rm.yaml
+rules:
+  - name: block-rm
+    on: PreToolUse Bash
+    match: command =~ rm[[:space:]]+-rf[[:space:]]+(/|~|\$HOME)
+    deny: "Blocked: destructive rm targeting system or home directory."
 ```
 
-## Getting Started
+No build step needed. On SessionStart, hooksmith scans all rules, rebuilds its routing index, and registers the right events automatically.
 
 ### Migrating existing hooks
 
-If you already have hooks in `settings.json`, convert them to YAML rules first:
+If you have hooks in `settings.json`, convert them to YAML:
 
 ```bash
 # Preview what will be converted (dry-run)
@@ -51,79 +58,250 @@ hooksmith convert
 
 # Write the YAML rule files
 hooksmith convert --apply
-
-# Build hooks.json and activate immediately
-hooksmith build
-/reload-plugins
 ```
 
 Then remove the converted entries from `settings.json` — hooksmith owns them now.
 
-### Creating your first rule
+## Starter Rules
 
-1. Create a rule file (filename must match `id`):
+Ready-to-use rules you can copy to `~/.config/hooksmith/rules/`. Each rule is a standalone YAML file — pick what you need.
+
+### Safety Guards
+
+**Block dangerous bash commands** — catches `rm -rf /`, `sudo`, `chmod 777`, curl-pipe-sh:
 
 ```yaml
-# ~/.config/hooksmith/rules/block-rm.yaml
-id: block-rm
-event: PreToolUse
-matcher: Bash
-mechanism: regex
-field: command
-pattern: 'rm[[:space:]]+-rf[[:space:]]+(/|~|\$HOME)'
-result: deny
-message: "Blocked: destructive rm targeting system or home directory."
+# ~/.config/hooksmith/rules/bash-safety-guard.yaml
+rules:
+  - name: bash-safety-guard
+    on: PreToolUse Bash
+    run: ~/.config/hooksmith/scripts/bash-safety-guard.sh
+    deny: true
 ```
 
-2. Build and activate:
+**Process kill guard** — only allows killing processes Claude started or processes inside the current repo:
+
+```yaml
+# ~/.config/hooksmith/rules/process-kill-guard.yaml
+rules:
+  - name: process-kill-guard
+    on: PreToolUse Bash
+    run: ~/.config/hooksmith/scripts/process-kill-guard.sh
+    deny: true
+```
+
+**Protected files** — asks for confirmation before editing lock files and manifests:
+
+```yaml
+# ~/.config/hooksmith/rules/protected-files.yaml
+rules:
+  - name: protected-files
+    on: PreToolUse Write|Edit
+    run: ~/.config/hooksmith/scripts/protected-files.sh
+    ask: true
+```
+
+**Worktree boundary** — prevents writes outside the active git worktree:
+
+```yaml
+# ~/.config/hooksmith/rules/worktree-boundary.yaml
+rules:
+  - name: worktree-boundary
+    on: PreToolUse Write|Edit
+    run: ~/.config/hooksmith/scripts/worktree-boundary.sh
+    deny: true
+```
+
+### Workflow Automation
+
+**Autopilot redirect** — detects feature/bug requests and suggests `/develop`:
+
+```yaml
+# ~/.config/hooksmith/rules/autopilot-redirect.yaml
+rules:
+  - name: autopilot-redirect
+    on: UserPromptSubmit
+    prompt: |
+      Analyze this user message: $USER_PROMPT
+      If it's clearly a FEATURE or BUG request, respond with a workflow hint.
+      Otherwise respond with {}.
+    context: true
+```
+
+**Loop detector** — blocks Claude from getting stuck in retry loops:
+
+```yaml
+# ~/.config/hooksmith/rules/loop-detector.yaml
+rules:
+  - name: loop-detector
+    on: Stop
+    run: ~/.config/hooksmith/scripts/loop-detector.sh
+    deny: true
+```
+
+### Session Lifecycle
+
+**Git status at session start** — gives Claude branch and change awareness:
+
+```yaml
+# ~/.config/hooksmith/rules/session-git-status.yaml
+rules:
+  - name: session-git-status
+    on: SessionStart
+    run: ~/.config/hooksmith/scripts/session-git-status.sh
+    context: true
+```
+
+**Post-compact reminders** — re-injects critical context after compaction:
+
+```yaml
+# ~/.config/hooksmith/rules/post-compact-reminders.yaml
+rules:
+  - name: post-compact-reminders
+    on: PostCompact
+    run: ~/.config/hooksmith/scripts/post-compact-reminders.sh
+    context: true
+```
+
+### Development Tools
+
+**Auto-format** — runs prettier/formatter after Write/Edit:
+
+```yaml
+# ~/.config/hooksmith/rules/auto-format.yaml
+rules:
+  - name: auto-format
+    on: PostToolUse Write|Edit
+    run: ~/.config/hooksmith/scripts/auto-format.sh
+    context: true
+```
+
+**Smart notifications** — macOS alerts for permission prompts and idle:
+
+```yaml
+# ~/.config/hooksmith/rules/smart-notify.yaml
+rules:
+  - name: smart-notify
+    on: Notification
+    run: ~/.config/hooksmith/scripts/smart-notify.sh
+    context: true
+```
+
+> Scripts referenced above live in `~/.config/hooksmith/scripts/`. See `examples/` for self-contained rules that don't need external scripts.
+
+## CLI
+
+The plugin's `bin/` directory is added to PATH automatically — all commands are bare:
 
 ```bash
-hooksmith build
-/reload-plugins
+hooksmith list [--json] [--scope user|project|all]   # Show registered rules
+hooksmith init                                        # Regenerate hooks.json from rules
+hooksmith convert [--apply] [--scope user|project]    # Migrate settings.json hooks to YAML
+hooksmith eval                                        # Evaluate rules (called by hooks.json, not directly)
 ```
-
-> **Auto-build:** `hooksmith start` runs at each session start and rebuilds `hooks.json` only when rules have changed.
 
 ## Rule Scopes
 
 - **User-level** (`~/.config/hooksmith/rules/`): Applies to all projects
 - **Project-level** (`.hooksmith/rules/`): Applies to that project only
 
-Project rules override user rules with the same filename.
+Rules from both scopes are evaluated. Use a single-file format with multiple rules, or one file per rule.
 
 ## Rule Format
 
-Every rule requires an `id` field matching the filename (without `.yaml`):
+Every rule lives inside a `rules:` array:
 
 ```yaml
-id: my-rule            # Required — must match filename my-rule.yaml
-event: PreToolUse      # Hook event
-matcher: Bash          # Tool filter (optional)
-mechanism: regex       # regex, script, or prompt
-field: command         # Field to test (regex only)
-pattern: 'dangerous'   # Regex pattern (regex only)
-result: deny           # deny, ask, warn, or context
-message: "Blocked."    # Output message (optional)
-fail_mode: open        # open (default) or closed
-enabled: true          # false to exclude from build
-timeout: 10            # Seconds
+rules:
+  - name: my-rule          # Required — unique rule name
+    on: PreToolUse Bash    # Event and optional tool matcher
+    match: command =~ pat  # Mechanism: match, run, or prompt
+    deny: "Reason"         # Action: deny, ask, or context
 ```
+
+### The `on` field
+
+```
+on: <Event> [ToolMatcher]
+```
+
+- **Event** (required): `PreToolUse`, `PostToolUse`, `Stop`, `UserPromptSubmit`, `SessionStart`, `SessionEnd`, `SubagentStart`, `SubagentStop`, `PostCompact`, `Notification`, etc.
+- **Tool matcher** (optional): regex against `tool_name` — `Bash`, `Write|Edit`, etc.
 
 ### Mechanisms
 
-| Use `regex` when... | Use `script` when... | Use `prompt` when... |
-|---------------------|----------------------|----------------------|
-| Matching a pattern in a known field | Logic is complex or stateful | Condition requires judgment |
-| Zero overhead | You have an existing `.sh` script | Natural language evaluation |
+**match** — Pattern matching:
 
-### Result types
+```yaml
+rules:
+  - name: block-rm
+    on: PreToolUse Bash
+    match: command =~ rm[[:space:]]+-rf[[:space:]]+(/|~|\$HOME)
+    deny: "Blocked: destructive rm targeting system or home directory."
+```
 
-| Result | Effect |
-|--------|--------|
-| `deny` | Block the action |
-| `ask` | Prompt user for approval |
-| `warn` | Inject a warning into context |
-| `context` | Inject information into context |
+Available fields: `command`, `file_path`, `content`, `user_prompt`, `tool_name`, or any `tool_input` key.
+
+**run** — Custom bash logic:
+
+```yaml
+rules:
+  - name: sudo-guard
+    on: PreToolUse Bash
+    run: |
+      source "$HOOKLIB"
+      read_input
+      cmd=$(get_field command)
+      [[ "$cmd" =~ ^sudo ]] && echo "Root access not allowed"
+    deny: true
+```
+
+When `deny: true`, the script's stdout becomes the deny reason. No output = allow.
+
+**prompt** — LLM-evaluated:
+
+```yaml
+rules:
+  - name: security-review
+    on: PreToolUse Bash
+    prompt: "Review this bash command for security risks. Deny if it modifies system files, accesses credentials, or runs with elevated privileges."
+    ask: true
+```
+
+### Actions
+
+| Action | Effect | Compatible events |
+|--------|--------|-------------------|
+| `deny: "reason"` | Block the action | PreToolUse, PostToolUse, Stop, UserPromptSubmit, SubagentStop |
+| `ask: "reason"` | Prompt user for approval | PreToolUse only |
+| `context: "text"` | Inject context for Claude | All events |
+
+### All fields
+
+| Field     | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `name`    | Yes      | —       | Unique rule name |
+| `on`      | Yes      | —       | Event and optional tool matcher |
+| `match`   | One of   | —       | Pattern: `field =~ pattern` (POSIX ERE) |
+| `run`     | One of   | —       | Script path or inline bash |
+| `prompt`  | One of   | —       | LLM prompt text |
+| `deny`    | One of   | —       | Block with reason (or `true` for run/prompt) |
+| `ask`     | One of   | —       | Ask for approval (PreToolUse only) |
+| `context` | One of   | —       | Inject context message |
+| `enabled` | No       | `true`  | Set `false` to disable without removing |
+
+## Hooklib Helpers
+
+Available in `run` scripts via `source "$HOOKLIB"`:
+
+```bash
+read_input                    # Read stdin JSON into $INPUT
+get_field <name>              # Extract field (command, file_path, content, user_prompt, tool_name, cwd)
+deny "reason"                 # Block with message
+ask "reason"                  # Request user approval
+context "text"                # Inject context for Claude
+log "message"                 # Debug to stderr
+```
 
 ## Testing
 
@@ -131,31 +309,26 @@ timeout: 10            # Seconds
 bash tests/run-tests.sh
 ```
 
-Covers CLI commands, deny/ask/allow behaviors across multiple hooks. Zero dependencies — pure bash.
+Pure bash test runner, no dependencies. Covers all mechanisms and decision types.
 
 ## Dependencies
 
 - `jq`
 - `bash` 3.2+
+- Claude Code v2.1.91+
 
 ## Examples
 
-See `examples/` for sample rules covering all three mechanisms.
+See `examples/` for working rules covering all three mechanisms.
 
-Ask Claude to "create a hook rule" or "add a regex rule" — the `hooksmith` skill provides the full field reference, result-event compatibility table, and guided rule creation workflow.
+Ask Claude to "create a hook rule" — the `hooksmith` skill provides guided rule creation.
 
 ---
 
-## Related & References
+## References
 
 ### Claude Code Hooks
 
-- [Hooks reference](https://code.claude.com/docs/en/hooks) — Full event list, JSON payload shapes, decision fields by event
-- [Automate workflows with hooks](https://code.claude.com/docs/en/hooks-guide) — Guide to hook patterns and use cases
-- [Plugins reference](https://code.claude.com/docs/en/plugins-reference) — Plugin structure, `hooks.json` loading, `/reload-plugins`
-
-### Hookify (Official Anthropic Plugin)
-
-- [Hookify](https://claude.com/plugins/hookify) — Official Anthropic hook management plugin
-- [Hookify on GitHub](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/hookify)
-- [Writing Hookify rules](https://lobehub.com/skills/anthropics-claude-code-writing-rules)
+- [Hooks reference](https://code.claude.com/docs/en/hooks) — Full event list, JSON payload shapes, decision fields
+- [Automate workflows with hooks](https://code.claude.com/docs/en/hooks-guide) — Hook patterns and use cases
+- [Plugins reference](https://code.claude.com/docs/en/plugins-reference) — Plugin structure, `bin/` on PATH, `hooks.json` loading
